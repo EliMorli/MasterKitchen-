@@ -1,11 +1,30 @@
 # 09 — Open questions
 
-What discovery did not settle. Ordered by how much each one blocks. The first four should be
-answered before the corresponding screens get built; the rest can be resolved during the build.
+What discovery did not settle. Ordered by how much each one blocks. Items 2 and 3 have since been
+answered and are kept, marked, so they don't get re-raised.
 
 ---
 
 ## Blocking
+
+### 0. ★ WhatsApp number strategy — now the critical path
+
+The decision to go straight to the API ([07](07-communications.md)) makes this the longest lead
+item in the project. Nothing about it is a software question, and it can start today.
+
+**Need:**
+
+- Is the number currently on personal WhatsApp, the WhatsApp Business **app**, or already the
+  Cloud API? The Groups API **does not work on WhatsApp Business app numbers**, so this may force
+  a move.
+- Move the existing number to the Cloud API, or stand up a new dedicated one? Moving keeps the
+  number reps already know but takes the phone app away from the owners. A new number is clean but
+  is a new number to everybody.
+- Is there a verified Meta Business account? An **Official Business Account** is required for
+  groups, and approval time is not guaranteed.
+
+**Blocks:** all group automation. Everything else in the build proceeds without it, but nothing
+substitutes for starting it early.
 
 ### 1. Q24 was unintelligible — does crew pay change by distance, difficulty, or crew?
 
@@ -20,32 +39,26 @@ absorbs distance and difficulty, and there's no separate adjustment on Master Ki
 applied afterward? If yes, the payout model in [06](06-invoicing-and-payouts.md) is already
 correct and this closes.
 
-### 2. ★ How is margin set?
+### 2. Does "50%" mean markup on cost, or gross margin?
 
-The single largest gap. *"We put our margin on it"* (Q3) is the entire description.
+**Mostly resolved.** Margin is a percentage, the same most of the time, around 50%, and must
+always stay adjustable and editable.
 
-**Need:** percentage or fixed amount? The same for every job, or does it vary by job type, by
-client, by size? Who decides — is it a rule or a judgment call each time?
+What's left is one sentence of confirmation: 50% **markup on cost** (`cost × 1.5`) or 50% **gross
+margin** (`cost ÷ 0.5`)? On a $35,200 cost that's $52,800 vs $70,400 — see the table in
+[04](04-pricing-and-bidding.md).
 
-**Blocks:** the quoting screen. The schema supports every variant
-([04](04-pricing-and-bidding.md)), but the default behavior and the UI can't be designed without
-this.
+The quote screen shows both numbers live, so this can't cause a mistake in practice. It only
+determines which reading gets seeded as the default. **Not blocking** — confirm before launch.
 
-### 3. ★ What protects the design?
+### 3. ~~What protects the design?~~ — Closed
 
-Q13 says the design is included in the price. Q49 says an invoice goes out the moment the designer
-is dispatched. Nothing says what happens in between if the GC takes the design and walks.
+**Answered:** nothing needs to. The job is already sold by the sales rep before it reaches Master
+Kitchen, and the GC comes to them specifically to sub the work. The relationship is the
+protection — *"they're not going to leave us, because that's the whole relationship."*
 
-The design is the most valuable thing the business produces — it's what vendors price against and
-what makes the quote possible — and it currently leaves the building before there's a signed
-number.
-
-**Need:** Is the design invoice actually a deposit? Is it kept if the job doesn't proceed? Has a
-GC ever taken a design elsewhere? Should the design invoice be a distinct milestone with its own
-terms?
-
-This is a business-process question more than a software one, but the answer determines whether
-milestone 1 is a deposit, a fee, or a formality.
+So the milestone-1 invoice at designer dispatch stands as specified, and no deposit-retention or
+design-release mechanism is needed. Recorded here so it doesn't get re-raised.
 
 ### 4. Milestone percentages
 
@@ -103,20 +116,40 @@ Q45 describes a standard business invoice. Not specified: email, WhatsApp, or po
 whom, the rep or the GC's accounts payable. Given [01](01-how-the-business-works.md)'s finding
 that the rep is the only contact, an AP contact per client company may need to be added.
 
-### 12. WhatsApp Business account status
+### 12. Moved — see [#0](#0--whatsapp-number-strategy--now-the-critical-path)
 
-[07](07-communications.md) depends on an Official Business Account for group automation.
-
-**Need to know:** is the current number a personal WhatsApp, the WhatsApp Business app, or
-already on the Cloud API? Is there a verified Meta Business account? This determines how far away
-Phase 2 is — and since the Groups API is unavailable on WhatsApp Business App numbers, it may
-require moving to a different number, which is a decision the owners should make early even though
-the work comes later.
+Promoted to blocking now that the API is the chosen path.
 
 ### 13. Company name, branding, invoice identity
 
 Nothing was captured about legal entity name, logo, invoice branding, addresses, or bank details.
 Needed before the first invoice PDF renders.
+
+### 14. Direct Cloud API or a BSP?
+
+[07](07-communications.md) requires **inbound group webhooks**, which is the feature to evaluate
+against — not outbound convenience. Group support is new, so it must be confirmed explicitly
+rather than assumed from a vendor's feature list.
+
+Direct Cloud API is cheaper and gives full control; a BSP handles onboarding, template
+submission, and number migration. Given there is no in-house developer today, a BSP may be worth
+the margin — but only one that exposes group webhooks.
+
+### 15. Languages used in the groups, and voice notes
+
+The [message agent](11-message-agent.md) reads what reps and crews write.
+
+**Need to know:** what languages actually appear in these threads, and how much of the
+communication is voice notes rather than text? Contractor groups are typically heavy on both, and
+voice transcription is a real cost and quality factor. This changes extraction accuracy more than
+any other single input.
+
+### 16. Who belongs in each group?
+
+Groups cap at **8 participants**. Need the normal roster: which owners, how many crew members,
+whether the rep ever adds colleagues. Also worth knowing whether a single job ever runs two crews
+simultaneously — if so, that needs a second crew group, since the cap is hard and removed
+participants **cannot rejoin**.
 
 ---
 

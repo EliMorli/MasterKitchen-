@@ -113,22 +113,81 @@ select '55555555-5555-5555-5555-555555555551','44444444-4444-4444-4444-444444444
        m.payout_amount,'paid'
 from milestone m where m.project_id='55555555-5555-5555-5555-555555555551' and m.sequence=2;
 
+-- Two API-created groups, named by convention, linked to the project by external_id
+insert into whatsapp_group (id, project_id, audience, external_id, subject, state,
+                            service_window_expires_at, participant_count)
+values ('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1','55555555-5555-5555-5555-555555555551',
+        'client_rep','wag_sales_0001','MK-2026-0001 · 412 Maple St · Sales','active',
+        now() + interval '19 hours', 3),
+       ('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee2','55555555-5555-5555-5555-555555555551',
+        'crew','wag_crew_0001','MK-2026-0001 · 412 Maple St · Crew','active',
+        now() - interval '2 hours', 4);   -- window closed: template required
+
 -- Comms: a sent rep notification and a queued draft (the Outbox)
 insert into message_template (id, key, audience, body) values
   ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1','task_scheduled_rep','client_rep',
    'Crew will be at {address} tomorrow at {time} for {task}.');
 
-insert into message (project_id, template_id, audience, channel, contact_id, body, status, task_id, sent_at)
-values ('55555555-5555-5555-5555-555555555551','bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1','client_rep',
-        'whatsapp_manual','33333333-3333-3333-3333-333333333331',
+insert into message (project_id, whatsapp_group_id, template_id, direction, audience, channel,
+                     contact_id, body, status, task_id, sent_at, external_id)
+values ('55555555-5555-5555-5555-555555555551','eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1',
+        'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1','outbound','client_rep',
+        'whatsapp_api','33333333-3333-3333-3333-333333333331',
         'Crew will be at 412 Maple St today at 9:00 AM for plumbing inspection.','sent',
-        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3', now());
+        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3', now(), 'wamid.out.1');
 
-insert into message (project_id, template_id, audience, channel, contact_id, body, status, task_id)
-values ('55555555-5555-5555-5555-555555555551','bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1','client_rep',
-        'whatsapp_manual','33333333-3333-3333-3333-333333333331',
+insert into message (project_id, whatsapp_group_id, template_id, direction, audience, channel,
+                     contact_id, body, status, task_id)
+values ('55555555-5555-5555-5555-555555555551','eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1',
+        'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1','outbound','client_rep',
+        'whatsapp_api','33333333-3333-3333-3333-333333333331',
         'Crew will be at 412 Maple St tomorrow at 8:00 AM for cabinet install.','draft',
         'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa4');
+
+-- Inbound from the crew group: sender identified, claim extracted, suggestion raised.
+-- This is the case the owners described: "the install is done, but I don't see an invoice."
+insert into message (id, project_id, whatsapp_group_id, direction, audience, channel,
+                     from_phone, from_partner_id, from_display_name, body, status, external_id)
+values ('ffffffff-ffff-ffff-ffff-fffffffffff1','55555555-5555-5555-5555-555555555551',
+        'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee2','inbound','crew','whatsapp_api',
+        '+15551230004','44444444-4444-4444-4444-444444444443','Luis (Crew A)',
+        'demo is done, starting rough tomorrow','delivered','wamid.in.1');
+
+-- An unanswered question from the rep
+insert into message (id, project_id, whatsapp_group_id, direction, audience, channel,
+                     from_phone, from_contact_id, from_display_name, body, status, external_id)
+values ('ffffffff-ffff-ffff-ffff-fffffffffff2','55555555-5555-5555-5555-555555555551',
+        'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1','inbound','client_rep','whatsapp_api',
+        '+15551230001','33333333-3333-3333-3333-333333333331','Dave R.',
+        'any update on the countertops?','delivered','wamid.in.2');
+
+insert into extracted_claim (id, message_id, project_id, type, payload, confidence, model_version)
+values ('a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1','ffffffff-ffff-ffff-ffff-fffffffffff1',
+        '55555555-5555-5555-5555-555555555551','status',
+        '{"task_type":"demo","claimed_state":"complete"}'::jsonb, 0.940,'v1'),
+       ('a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a2','ffffffff-ffff-ffff-ffff-fffffffffff2',
+        '55555555-5555-5555-5555-555555555551','question',
+        '{"topic":"countertop schedule"}'::jsonb, 0.880,'v1');
+
+insert into suggestion (project_id, claim_id, source_message_id, rule_key, headline, detail,
+                        proposed_action, confidence)
+values ('55555555-5555-5555-5555-555555555551','a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1',
+        'ffffffff-ffff-ffff-ffff-fffffffffff1','done_but_not_invoiced',
+        'Crew A said demo is done — milestone 2 not invoiced',
+        'Task "demo" is marked done but no invoice has been raised for milestone 2.',
+        '{"type":"draft_invoice","milestone_sequence":2}'::jsonb, 0.920),
+       ('55555555-5555-5555-5555-555555555551','a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a2',
+        'ffffffff-ffff-ffff-ffff-fffffffffff2','unanswered_question',
+        'Dave asked about the countertops — no reply',
+        'Question received with no outbound response since.',
+        '{"type":"draft_reply"}'::jsonb, 0.850);
+
+-- One already-dismissed suggestion, so accept-rate reporting has something to chew on
+insert into suggestion (project_id, source_message_id, rule_key, headline, proposed_action,
+                        confidence, status, resolved_at)
+values ('55555555-5555-5555-5555-555555555551','ffffffff-ffff-ffff-ffff-fffffffffff1',
+        'unanswered_question','Possible unanswered message',
+        '{"type":"draft_reply"}'::jsonb, 0.410,'dismissed', now());
 
 -- Crew job link -> upload tagged extra_work -> pending change order (docs/08)
 insert into job_link (id, project_id, token, label, partner_id)
@@ -180,3 +239,33 @@ join partner p on p.id = co.raised_by_partner;
 select m.sequence, m.name, m.client_amount, m.payout_amount, i.number, i.status
 from milestone m left join invoice i on i.milestone_id = m.id
 where m.project_id='55555555-5555-5555-5555-555555555551' order by m.sequence;
+
+\echo '--- Project thread: both directions, senders identified, per group ---'
+select g.subject, m.direction,
+       coalesce(m.from_display_name, 'Master Kitchen') as who,
+       left(m.body, 52) as message, m.status
+from message m
+join whatsapp_group g on g.id = m.whatsapp_group_id
+order by g.audience, m.created_at;
+
+\echo '--- Service window state per group (drives the free-form vs template indicator) ---'
+select subject, participant_count,
+       service_window_expires_at > now() as free_form_open,
+       case when service_window_expires_at > now()
+            then 'free-form' else 'template required' end as sending_mode
+from whatsapp_group order by audience;
+
+\echo '--- Needs attention: agent suggestions, each citing its source message ---'
+select rule_key, headline, confidence, said_by, source_message
+from v_needs_attention order by confidence desc;
+
+\echo '--- Agent rule performance (accept rate) ---'
+select rule_key, total, accepted, dismissed, accept_rate from v_agent_rule_performance order by rule_key;
+
+\echo '--- Margin: markup on cost vs resulting gross margin (docs/04) ---'
+select o.default_markup_pct                                   as default_markup_pct,
+       q.cost_total,
+       q.price,
+       round((q.price - q.cost_total) / q.cost_total * 100, 1) as actual_markup_pct,
+       round((q.price - q.cost_total) / q.price      * 100, 1) as actual_gross_margin_pct
+from quote q cross join org_setting o;

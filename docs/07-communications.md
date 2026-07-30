@@ -1,161 +1,224 @@
-# 07 — Communications (WhatsApp)
+# 07 — WhatsApp integration architecture
 
-The other half of Q67. Read this before committing to a plan, because the answer here changed
-during discovery research.
+Supersedes the phased "manual first" plan from the original draft. The decision is to go
+straight to the API, so this document specifies the real integration.
 
-## What was asked for
+Companion doc: [11 — The message agent](11-message-agent.md), which covers the AI layer reading
+those threads.
 
-Q65, near-verbatim:
+## The one idea everything rests on
 
-> If we scheduled the guys for 8:00 and we approved it very early in the morning, we'll have all
-> these things ready to shoot out messages. We go over it and then we say "okay, yeah" — the guys
-> will be there at 8:00 a.m. at this job — and then we just send that out automatically to the
-> sales rep that we're talking to for that specific job.
+**The project is the thread.**
 
-And Q58 on what breaks today:
+A project and its WhatsApp groups are the same object seen from two sides. The group is not a
+place messages happen to live — it is the project's communication surface, and everything said in
+it lands on the project record automatically.
 
-> Sometimes approval of schedule... we want to automate that process. Once we get approved and
-> the schedule goes through on our end, it will update the sales rep with something like "the
-> guys will be there tomorrow at 8:00," because communication is key.
+That is what makes the rest possible: the inbox, the agent, the invoice nudges. None of it works
+if the link between a group and a project is fuzzy.
 
-Note the shape carefully: it is **not** "the system sends messages on its own." It is *messages
-prepared in advance, reviewed in a batch, then released*. The human stays in the loop by design.
-That is the right instinct and the spec keeps it.
+## Linking: by ID, never by name
 
-## The constraint
+The concern about "a mess of each group" is the right one, and it's solved by not relying on
+names at all.
 
-Q68: *"getting off of WhatsApp is very hard... the sales reps and the technicians won't get off
-WhatsApp, and you can't change that."* A previous attempt already failed on this. WhatsApp is
-immovable. Everything below works around it rather than against it.
+When the system creates a group through the API, Meta returns a **group ID**. That ID is stored
+on the project. Every inbound message carries the group ID, so routing a message to a project is
+a primary-key lookup — not a name match, not a guess.
 
-Current state: ~40 live groups, two per project — one with the sales rep, one with the technicians
-(Q55) — with the owners relaying between them all day.
+The group *name* is therefore purely cosmetic. Someone can rename the group, and nothing breaks.
 
-## What's actually possible — the finding
+This is why groups must be **created by the system, never by hand**. A hand-made group has no
+recorded ID and is invisible to the app. Creating groups becomes an app action, not a WhatsApp
+action.
 
-The initial assumption for a spec like this would be that WhatsApp's official API can't post to
-groups at all, which would kill the group-automation idea outright. **That is no longer true.**
+## Naming convention
 
-Meta has opened a [Groups API](https://developers.facebook.com/documentation/business-messaging/whatsapp/groups)
-on the WhatsApp Business Platform. The [Messages API](https://developers.facebook.com/documentation/business-messaging/whatsapp/groups/groups-messaging/)
-now accepts `recipient_type: "group"` alongside `individual`, supporting text, media, and
-template messages.
+The API lets you set the group **name and description** at creation and edit them later, so the
+convention is enforced by code and can't drift.
 
-The conditions attached matter a great deal here:
+```
+MK-0142 · 412 Maple St · Sales
+MK-0142 · 412 Maple St · Crew
+```
 
-| Condition | Consequence for Master Kitchen |
+- **Project code first** — sorts chronologically in the WhatsApp list, and makes the group
+  searchable by code
+- **Address second** — how everyone actually refers to a job
+- **Audience suffix** — instantly tells you which room you're in before you type
+
+Keep the whole string under ~60 characters; truncate the address, never the code. The description
+field carries the rest: client company, rep name, job type, and a link back to the project page.
+
+Two groups per project, matching how they already work (Q55) — one with the sales rep, one with
+the technicians. Keeping them separate isn't just habit: **the crew must never see the client
+price**, and one merged group would leak margin.
+
+## Group lifecycle
+
+```
+Project created (intake)
+        │
+        ├──►  create "· Sales" group
+        │     set name + description
+        │     send invite link to the rep's 1:1 WhatsApp
+        │
+   Quote won, crew assigned
+        │
+        ├──►  create "· Crew" group
+        │     invite the assigned crew
+        │     pin the job upload link (docs/08)
+        │
+   Job closed
+        │
+        └──►  archive: group stays, project marked closed,
+              thread stays readable forever on the project page
+```
+
+Creating the crew group only after the job is won avoids littering WhatsApp with groups for jobs
+that never sell.
+
+## The migration is easier than it looks
+
+Participants can't be added directly — they **join via an invite link**, by choice. Normally
+that's painful friction.
+
+Here it isn't, because **the current process already creates a new group per project.** Reps and
+techs are used to being pulled into a new group whenever a job starts. The only change is that
+the invite arrives as a link instead of an add. That's it. No behavior change to sell, which
+matters given Q68's warning that a previous attempt died trying to change behavior.
+
+Rollout: **new projects only.** The existing ~40 groups can't be adopted by the API — they were
+created on consumer WhatsApp and there's no way to import them. They run out naturally as those
+jobs finish. There is no migration day and no cutover.
+
+## Constraints that shape the design
+
+| Constraint | Consequence |
 | --- | --- |
-| Requires an **Official Business Account (OBA)** | A verification hurdle to clear before any of this works |
-| **Max 8 participants per group** | Fine — a rep group and a tech group are both small |
-| Groups are **created by the business** via the API; participants join by invite link | **The existing ~40 groups cannot be adopted.** New projects get new groups |
-| Only **one Cloud API business per group** | Fine |
-| **Not available on WhatsApp Business App numbers** | The number must be on the Cloud API, not the phone app |
-| Up to **10,000 groups per number** | At ~20 jobs/month × 2 groups, ~20 years of headroom |
-| Business can **pin messages** (max 3, admins only) | Directly enables the pinned upload link from Q64 |
-| Interactive messages, disappearing messages, view-once unsupported | Irrelevant here |
+| Max **8 participants** per group | Fine — a rep group is 2-3 people, a crew group 3-4. But it's a hard ceiling: a big job with several crews needs a second group, not a bigger one. |
+| Groups are **invite-link only** | Onboarding is a link, not an add. |
+| **Removed participants cannot rejoin** the same group | Don't remove anyone casually. If a crew is swapped mid-job, create a new group rather than removing and re-adding. Worth enforcing in the UI. |
+| Only **one API business per group** | No issue. |
+| **Not available on WhatsApp Business App numbers** | The number must be on the Cloud API. See [09 #12](09-open-questions.md). |
+| Requires an **Official Business Account** | The long pole. Start this application first. |
+| **10,000 groups** per number | ~20 years of headroom at current volume. |
+| Interactive/carousel messages unsupported | Irrelevant — messages here are text and photos. |
 
-Two of these are decisive. The **OBA requirement** is a real gate with an approval process and no
-guaranteed timeline. And **existing groups can't be brought in** — automation only applies to
-groups the system creates from here on.
+## Cost — smaller than it looks
 
-Which means: automation is achievable, but it cannot be the first thing that ships, and it cannot
-be the only plan.
+This is the finding worth internalizing before anyone worries about per-message pricing.
 
-## The three transport options
+Group messages are billed **per delivered message per participant**. A message to a 6-person group
+is 6 billable messages. On its own that sounds bad.
 
-**A. Compose-and-copy (no API, works today)**
-The system writes the exact message and puts it one tap away: a copy button, or a
-`https://wa.me/<phone>?text=<message>` deep link that opens WhatsApp with the text pre-filled.
-The owner pastes into whichever group they want.
-*Works with all 40 existing groups. No approval, no platform risk, no cost. Costs one human tap.*
+But: **when any group member sends a message, a 24-hour customer service window opens for the
+whole group, and free-form messages are free inside it.**
 
-**B. Cloud API Groups (the real automation)**
-The system creates each project's groups, invites the rep and the techs by link, sends
-automatically, pins the upload link, and receives replies as webhooks — meaning inbound messages
-can land on the project timeline instead of being scrolled for.
-*Requires OBA. New groups only. Per-message cost.*
+Master Kitchen's groups are conversations, not broadcasts. Someone — rep or crew — writes in a
+live job's group most days. So the window is open most of the time, and most messages cost
+nothing. Only messages sent into a group that has been silent for 24+ hours need a pre-approved
+**template**, and those are billed per participant.
 
-**C. Unofficial libraries** (Baileys, whatsapp-web.js, and similar)
-These drive a linked device and can post into any existing group, including the current 40.
-They also violate WhatsApp's terms and put the business's primary phone number at risk of a ban.
-For a company whose entire operation runs on that number, that is not a survivable risk.
-**Not recommended.**
+At ~20 jobs/month, that's a handful of template messages per job across a few participants. This
+is a rounding error, not a budget line. **Do not design around message cost.**
 
-## Recommended path
+What it does justify is a small UI affordance: show the window state on the project's
+communication tab.
 
-Build the message engine once, behind a transport interface. Ship A immediately, add B when the
-OBA lands.
+> 🟢 Free-form open · 19h left    or    🟡 Template required
+
+so the owners know when a message costs something and when it doesn't.
+
+## Templates to get approved
+
+Templates need Meta pre-approval, so submit them early — they gate the out-of-window messages.
+These map exactly to the triggers already specified:
+
+| Template key | Use |
+| --- | --- |
+| `group_invite` | Sent 1:1 to a rep or crew with the join link |
+| `task_scheduled_rep` | "Crew will be at {{address}} tomorrow at {{time}} for {{task}}." |
+| `task_scheduled_crew` | "{{address}} on {{date}} at {{time}} — {{task}}." |
+| `task_rescheduled` | "Update on {{address}}: {{task}} moved to {{new_date}}." |
+| `inspection_passed` | "{{type}} inspection passed at {{address}}. Next: {{next_task}}." |
+| `design_ready` | "Design for {{address}} is ready." |
+| `quote_sent` | "Quote for {{address}}: {{price}}, all in." |
+| `milestone_invoiced` | "{{milestone}} complete at {{address}}. Invoice {{number}} sent." |
+| `change_order_request` | "Extra work at {{address}}: {{description}}. Additional {{amount}}. Approve?" |
+
+All are **utility** templates, the cheapest category. Nothing here is marketing.
+
+## The Communication tab — the omnichannel piece
+
+Yes, build it. This is the right instinct and it's the centre of the product.
+
+Per project, one screen:
 
 ```
-   Trigger (schedule confirmed, inspection passed, milestone reached)
-                        │
-                        ▼
-              Template + project data
-                        │
-                        ▼
-                  DRAFT MESSAGE  ────►  the Outbox
-                        │
-                        ▼
-                 Owner reviews, approves
-                        │
-              ┌─────────┴─────────┐
-              ▼                   ▼
-      Phase 1: copy /        Phase 2: Cloud API
-      wa.me deep link        sends to the group
-              └─────────┬─────────┘
-                        ▼
-                   Logged on the project
+┌─ 412 Maple St · MK-0142 ────────────────────────────────────┐
+│  [ Sales · Dave R. ]  [ Crew · Crew A ]      🟢 open 19h     │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Dave R.        Can the guys start Thursday?         9:14   │
+│                                                             │
+│  You            Thursday works, 8am.                 9:31   │
+│                                                             │
+│  Crew A (Luis)  [photo] demo done                   14:02   │
+│                 └─ saved to project · tagged progress       │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│  Type a message…                              [Send]        │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-Same drafting logic, same review step, same audit trail. Only the last hop changes — so Phase 2
-is a transport swap, not a rewrite. Existing projects can stay on manual send forever while new
-ones use the API, which makes the migration a non-event.
+What it does:
 
-## The Outbox
+- **Both groups, one screen**, as tabs. Never merged — sending to the wrong room is how the crew
+  sees the client price.
+- **Senders identified.** Inbound group messages identify the individual sender, so you know
+  whether the rep or a specific technician said something. This is what makes the agent in
+  [doc 11](11-message-agent.md) possible.
+- **Reply from the app** — goes out through the API into the real group. The rep sees it in
+  WhatsApp exactly as before and has no idea the app exists.
+- **Photos auto-file.** Every image lands as a project attachment, timestamped and searchable.
+  This kills Q57 outright — no more scrolling back for the design and prices.
+- **Window state** shown, per above.
+- **Full history**, permanently, on the project. When a job comes up a year later the whole
+  conversation is right there.
 
-The screen that carries the whole feature, and the literal implementation of *"we'll have all
-these things ready to shoot out messages... we go over it and then we say okay, yeah."*
+The owners can still answer from their phone in WhatsApp directly, and it all syncs. That matters:
+nobody is forced into the app to answer a quick question at 7pm.
 
-Every morning it holds the day's drafts:
+## On sent.dm
 
-| To | Project | Message | |
-| --- | --- | --- | --- |
-| Dave (Ridgeline GC) | 412 Maple St | "Crew will be at 412 Maple St tomorrow at 8:00 AM for cabinet install." | Send / Edit / Skip |
-| Crew A | 412 Maple St | "412 Maple St tomorrow 8:00 AM — cabinet install. Details: [link]" | Send / Edit / Skip |
-| Mike (Summit Homes) | 88 Oak Ave | "Electrical inspection passed at 88 Oak Ave. Cabinets going in Thursday." | Send / Edit / Skip |
+Worth flagging, since it was the reference: **sent.dm isn't the model for this.** It's an outbound
+routing API — one endpoint that fans messages across SMS/WhatsApp/RCS with automatic channel
+selection and fallback. Explicitly not a conversation platform: no shared inbox, no threads, no
+agent collaboration.
 
-Every message is editable before it goes. **Approve all** exists for the common morning where
-everything is right. Nothing sends without a human, in either phase.
+It's a good product for *sending* — transactional notifications at volume. But it doesn't provide
+the per-project thread, and the whole value here is inbound: capturing what the crew and the rep
+say, and reconciling it against the job.
 
-## Triggers and templates
+So: build the inbox, and connect to WhatsApp either **directly via Cloud API** or through a **BSP
+that exposes inbound group webhooks**. That's the requirement to evaluate vendors against — not
+outbound features. Confirm group support explicitly, since it's new and not every BSP has it.
 
-| Trigger | To | Template |
-| --- | --- | --- |
-| Task scheduled/confirmed for tomorrow | Rep | "Crew will be at {address} tomorrow at {time} for {task}." |
-| Task scheduled | Crew | "{address} on {date} at {time} — {task}. Job page: {link}" |
-| Task rescheduled | Rep + crew | "Update on {address}: {task} moved from {old} to {new}." |
-| Inspection passed | Rep | "{type} inspection passed at {address}. Next: {next_task} on {date}." |
-| Inspection failed | Rep | "{type} inspection at {address} did not pass. {notes} Rescheduling." |
-| Design complete | Rep | "Design for {address} is ready: {link}" |
-| Quote sent | Rep | "Quote for {address}: {price}, all in. Let us know to proceed." |
-| Milestone reached | Rep | "{milestone} complete at {address}. Invoice {number} sent." |
-| Change order pending | Rep | "Extra work found at {address}: {description}. Additional {amount}. Approve?" |
-| Job complete | Rep | "{address} is complete. Final invoice {number} sent." |
+## Build order
 
-Templates are editable in-app. Tone should match how they already write — short, direct, no
-corporate voice. A rep who notices the messages changed character will start ignoring them.
+The Official Business Account application is the long pole and gates everything. **Start it
+first**, this week, before any code.
 
-## Inbound
+While it's pending, everything else is buildable and testable:
 
-Phase 1: no inbound capture. The gap is filled by the crew upload link
-([08](08-crew-job-links.md)), which routes photos and notes to the right project without anyone
-leaving WhatsApp — and which addresses Q57's *"scrolling back for the design and prices"* from
-the other direction, since anything that lands in the system stops needing to be found in a chat.
+1. **OBA application + number strategy** ← start now, unblocks the rest
+2. Project spine, quoting, milestones, invoicing (unchanged, no dependency)
+3. Communication tab UI, message store, template drafting — against a mock transport
+4. Template submission to Meta for approval (also has lead time — submit early)
+5. Cloud API wiring: group creation, invite links, send, inbound webhooks
+6. [Message agent](11-message-agent.md) on top of the now-flowing message stream
+7. Crew job links, auto-pinned in the crew group
 
-Phase 2: webhooks put group replies on the project timeline automatically.
-
-## What this does not do
-
-It does not get anyone off WhatsApp, and it should not try. Reps and techs keep using WhatsApp
-exactly as they do now. The change is entirely on the owners' side: instead of composing forty
-messages a day from memory, they review a prepared list and release it. That was the ask.
+Steps 2-4 don't wait for step 1. If the OBA is delayed, everything except 5 still ships, and the
+Communication tab degrades gracefully to compose-and-copy against the existing groups.

@@ -16,6 +16,22 @@ ways: there's no migration and no integration burden, but there's also no existi
 things together if the new one is half-built. Each phase must be independently useful on the day
 it ships.
 
+## Phase 0 — Paperwork, starting now
+
+Not code. These have external lead times and gate Phase 2, so they run from day one in parallel
+with everything else.
+
+- **Official Business Account application** — required for the Groups API
+- **Number decision** — the Groups API doesn't work on WhatsApp Business *app* numbers, so the
+  number either migrates to the Cloud API or a new one is provisioned
+  ([09 #0](09-open-questions.md))
+- **BSP vs direct Cloud API** — evaluated on inbound group webhooks, not outbound features
+  ([09 #14](09-open-questions.md))
+- **Message template submission** — Meta pre-approval also takes time; the list is in
+  [07](07-communications.md)
+
+If all of this lands early, Phase 2 is unblocked when it arrives. If it drags, nothing else stops.
+
 ## Phase 1 — The spine and the money (the MVP)
 
 Everything a job needs to exist, plus the invoicing half of Q67.
@@ -36,43 +52,48 @@ Everything a job needs to exist, plus the invoicing half of Q67.
 
 **Why this first:** invoicing is half the stated goal and depends on nothing external. No Meta
 approval, no vendor onboarding, no behavior change from anyone outside the company. It can ship
-and pay for itself while the harder parts are still in flight.
+and pay for itself while Phase 0 is still in flight.
 
-**Prerequisites:** open questions [#2 (margin)](09-open-questions.md) and
-[#4 (milestone percentages)](09-open-questions.md) must be answered.
+**Prerequisite:** [#4, milestone percentages](09-open-questions.md). The margin question is
+settled enough to build against — 50%, editable, both readings shown on screen.
 
-## Phase 2 — Communication and the portal
+## Phase 2 — WhatsApp and the portal
 
-The other half of Q67, plus the thing the owner described most concretely.
+The other half of Q67.
 
 **Build**
 - Message templates and the drafting engine
 - **The Outbox** — the daily review-and-release queue ([07](07-communications.md))
-- Transport A: copy button and `wa.me` deep links, working with all existing groups
+- Group creation per project with the naming convention, invite links out to rep and crew
+- Send through the Cloud API; inbound group webhooks with sender identity
+- **The Communication tab** — per-project thread, both groups, reply from the app, photos
+  auto-filed, service-window indicator
 - Triggers: schedule confirmed, rescheduled, inspection passed, milestone reached, design ready
 - **Bid portal** — vendor single page, owner Bid Board ([04](04-pricing-and-bidding.md))
 - Selected bids flow into quote cost lines
 - Change orders with approval channel and evidence capture
 - Inspections with pass/fail and the auto-prompt to schedule next + notify rep
 
-**Why together:** they share the tokenized-link infrastructure, and both are pure additions to a
-system already running.
+**Gate:** Phase 0. If the OBA is delayed, everything here still ships — the Communication tab
+degrades to compose-and-copy against the existing groups, and the transport swaps in later
+without a rewrite.
 
-**Parallel track, starting now:** begin the Official Business Account application. It gates
-Phase 3 and has an unpredictable timeline — see [#12](09-open-questions.md).
+**Rollout:** new projects only. The existing ~40 groups can't be adopted and simply run out as
+those jobs finish. No cutover.
 
-## Phase 3 — True automation
+## Phase 3 — The agent and the crew links
 
 **Build**
-- WhatsApp Cloud API integration, group creation per project, invite links
-- Automatic send from the Outbox once approved
-- Inbound webhooks putting replies on the project timeline
-- **Crew job links** with photo upload, auto-pinned in the group
+- Message ingest and extraction, running silently first ([11](11-message-agent.md))
+- Two reconciliation rules only — "claimed done but not invoiced" and "unanswered question"
+- The Attention panel and the global needs-attention queue
+- Accept/dismiss tracking from day one, and expansion only where accept rates justify it
+- **Crew job links** with photo upload, auto-pinned in the crew group
   ([08](08-crew-job-links.md))
 - `extra work` uploads becoming pending change orders
 
-**Gate:** OBA approval. Existing projects stay on Transport A permanently; new projects use the
-API. No migration event.
+**Why last:** the agent needs a flowing message stream to read, which Phase 2 produces. Shipping
+it earlier means tuning against no data.
 
 ## Phase 4 — What the data makes possible
 
@@ -100,7 +121,8 @@ iteration speed, no existing systems to integrate with.
 | UI | **Tailwind + shadcn/ui** | Fast to build a dense internal tool that doesn't look like one |
 | Hosting | **Vercel** | Matches the app; no ops burden for a four-person company |
 | Email | Resend or Postmark | Invoice delivery |
-| WhatsApp | Cloud API direct, or a BSP | Evaluate at Phase 3 against the OBA requirement |
+| WhatsApp | Cloud API direct, or a BSP | Must expose **inbound group webhooks** ([09 #14](09-open-questions.md)) |
+| Transcription | Whisper or equivalent | Voice notes in crew groups ([11](11-message-agent.md)) |
 | PDFs | React-PDF or a headless-Chrome renderer | Invoices |
 
 This is a recommendation, not a decision — the spec in this repo is stack-independent and
@@ -129,8 +151,10 @@ costs should be owner-only from the first release, not retrofitted.
 
 | Risk | Mitigation |
 | --- | --- |
-| OBA never approved, or the number can't move to Cloud API | Transport A works forever; the automation degrades to one tap, not zero |
-| Owners keep using WhatsApp directly and the system goes stale | Outbox must be faster than typing; intake under 30 seconds |
+| OBA never approved, or the number can't move to Cloud API | Everything except automatic send still ships; the Communication tab degrades to compose-and-copy — one tap, not zero |
+| Reps or crews don't accept the group invites | The current process already creates a new group per project, so this is the habit they have; the invite just arrives as a link |
+| A job needs more than 8 people in a group | Hard cap. Use a second crew group — never remove participants, since removed members **cannot rejoin** |
+| The agent produces noise and gets ignored | Ship two rules, run extraction silently first, track accept rate per rule and retire what gets dismissed |
+| Owners keep using WhatsApp directly and the system goes stale | They can — replies sync both ways. The app must never be the only way to answer a message |
 | Vendors ignore the bid portal and want the sheet back | Link opens with no login, prefilled; keep manual bid entry as a fallback |
-| Margin rule stays undefined | Free-text override on every quote so the screen never blocks a real job |
 | Growth outpaces the build | Phase 1 alone handles well past 20 jobs/month |

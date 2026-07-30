@@ -117,9 +117,27 @@ create type inspection_result as enum ('pending', 'passed', 'failed', 'canceled'
 create type invoice_status as enum ('draft', 'sent', 'partial', 'paid', 'overdue', 'void');
 create type payout_status  as enum ('pending', 'approved', 'paid', 'canceled');
 
-create type message_audience as enum ('client_rep', 'crew', 'partner', 'internal');
-create type message_status   as enum ('draft', 'approved', 'sent', 'failed', 'canceled');
-create type message_channel  as enum ('whatsapp_manual', 'whatsapp_api', 'sms', 'email');
+create type message_audience  as enum ('client_rep', 'crew', 'partner', 'internal');
+create type message_status    as enum ('draft', 'approved', 'sent', 'delivered', 'read', 'failed', 'canceled');
+create type message_channel   as enum ('whatsapp_manual', 'whatsapp_api', 'sms', 'email');
+create type message_direction as enum ('outbound', 'inbound');
+
+create type whatsapp_group_state as enum ('pending', 'active', 'archived', 'failed');
+
+-- What the agent read out of an inbound message (docs/11).
+create type claim_type as enum (
+    'status',        -- "demo is done"
+    'schedule',      -- "can they come Thursday"
+    'inspection',    -- "inspection passed"
+    'extra_work',    -- "there's rot under the sink, another $900"
+    'approval',      -- "ok go ahead"
+    'problem',       -- "cabinets came damaged"
+    'money',         -- "when is the invoice coming"
+    'question',
+    'other'
+);
+
+create type suggestion_status as enum ('open', 'accepted', 'dismissed', 'expired');
 
 create type upload_tag as enum ('progress', 'problem', 'extra_work', 'complete', 'other');
 
@@ -140,6 +158,23 @@ create table user_account (
     updated_at    timestamptz not null default now()
 );
 
+-- Single-row org settings.
+create table org_setting (
+    id                  boolean primary key default true check (id),   -- singleton
+    legal_name          text,
+    -- "Most of the time it's going to be like 50%", always adjustable.
+    -- Stored as markup on cost: price = cost * (1 + pct/100). See docs/04 and
+    -- open question #2 (markup vs gross margin) before treating 50 as final.
+    default_markup_pct  numeric(6,3) not null default 50.000,
+    default_net_days    int not null default 30,
+    invoice_prefix      text not null default 'MK',
+    workdays            int[] not null default '{1,2,3,4,5,6}',  -- Mon-Sat (Q36)
+    updated_at          timestamptz not null default now()
+);
+
+insert into org_setting (id) values (true);
+
+
 -- The billable client: the GC company, never the homeowner (Q37).
 create table client_company (
     id                 uuid primary key default gen_random_uuid(),
@@ -148,7 +183,9 @@ create table client_company (
     billing_address    text,
     phone              text,
     default_net_days   int,                    -- terms vary by job (Q46); this is a fallback
-    default_margin_type  margin_type,          -- see open question #2
+    -- Margin is a percentage, ~50%, always editable. Null here falls back to
+    -- org_setting.default_markup_pct. Markup-on-cost semantics — see docs/04.
+    default_margin_type  margin_type,
     default_margin_value numeric(12,4),
     notes              text,
     is_active          boolean not null default true,
@@ -528,18 +565,31 @@ create table message_template (
 );
 
 
+-- Both directions. Inbound rows come from group webhooks; outbound from the Outbox.
 create table message (
     id             uuid primary key default gen_random_uuid(),
     project_id     uuid references project(id) on delete cascade,
+    whatsapp_group_id uuid,                       -- FK added after whatsapp_group below
     template_id    uuid references message_template(id),
+    direction      message_direction not null default 'outbound',
     audience       message_audience not null,
-    channel        message_channel not null default 'whatsapp_manual',
+    channel        message_channel not null default 'whatsapp_api',
 
+    -- Outbound recipient
     contact_id     uuid references contact(id),   -- to a rep
     partner_id     uuid references partner(id),   -- to a crew or vendor
     to_phone       text,
 
+    -- Inbound sender. Group webhooks identify the individual sender, which is what
+    -- makes the agent in docs/11 possible. Resolved to a contact/partner when known.
+    from_phone         text,
+    from_contact_id    uuid references contact(id),
+    from_partner_id    uuid references partner(id),
+    from_display_name  text,                      -- as WhatsApp reports it
+
     body           text not null,
+    has_media      boolean not null default false,
+    transcript     text,                          -- voice notes, transcribed (docs/11)
     status         message_status not null default 'draft',
 
     task_id        uuid references task(id),
@@ -549,28 +599,97 @@ create table message (
     approved_by    uuid references user_account(id),
     approved_at    timestamptz,
     sent_at        timestamptz,
-    external_id    text,                          -- Cloud API message id, phase 3
+    external_id    text unique,                   -- Cloud API message id
     error          text,
 
     created_at     timestamptz not null default now(),
     updated_at     timestamptz not null default now()
 );
 
-create index on message (project_id);
+create index on message (project_id, created_at desc);   -- the project thread
 create index on message (status) where status in ('draft', 'approved');   -- the Outbox
+create index on message (whatsapp_group_id, created_at desc);
 
 
--- Phase 3: WhatsApp groups created by the system via the Groups API.
--- Existing consumer-created groups cannot be adopted — see docs/07.
+-- Groups created by the system via the Groups API. The group ID is the link to the
+-- project — names are cosmetic and can drift without breaking anything (docs/07).
+-- Existing consumer-created groups cannot be adopted.
 create table whatsapp_group (
     id              uuid primary key default gen_random_uuid(),
     project_id      uuid not null references project(id) on delete cascade,
     audience        message_audience not null,     -- 'client_rep' or 'crew'
-    external_id     text unique,                   -- group id from the API
+    external_id     text unique,                   -- group id from the API; the real link
+    subject         text,                          -- 'MK-0142 · 412 Maple St · Sales'
+    description     text,
     invite_url      text,
-    created_at      timestamptz not null default now(),
-    unique (project_id, audience)
+    state           whatsapp_group_state not null default 'pending',
+
+    -- Free-form messages are free while a member has written within 24h (docs/07).
+    -- Drives the open/closed indicator on the communication tab.
+    service_window_expires_at timestamptz,
+
+    participant_count int not null default 0,      -- hard cap of 8
+    error             text,
+    created_at        timestamptz not null default now(),
+    updated_at        timestamptz not null default now(),
+    unique (project_id, audience),
+    constraint whatsapp_group_participant_cap check (participant_count <= 8)
 );
+
+create index on whatsapp_group (project_id);
+
+alter table message
+    add constraint message_whatsapp_group_fk
+    foreign key (whatsapp_group_id) references whatsapp_group(id) on delete set null;
+
+
+-- =============================================================================
+-- THE MESSAGE AGENT  (docs/11) — proposes, never acts
+-- =============================================================================
+
+-- What the agent extracted from one inbound message. Re-runnable: extraction can be
+-- improved without losing the suggestion history below.
+create table extracted_claim (
+    id            uuid primary key default gen_random_uuid(),
+    message_id    uuid not null references message(id) on delete cascade,
+    project_id    uuid not null references project(id) on delete cascade,
+    type          claim_type not null,
+    payload       jsonb not null default '{}'::jsonb,   -- task type, date, amount, ...
+    confidence    numeric(4,3) check (confidence between 0 and 1),
+    model_version text,
+    created_at    timestamptz not null default now()
+);
+
+create index on extracted_claim (project_id, created_at desc);
+create index on extracted_claim (message_id);
+
+
+-- The reconciliation output: chat says X, system says Y, here is the proposed action.
+-- Always cites the message it came from.
+create table suggestion (
+    id              uuid primary key default gen_random_uuid(),
+    project_id      uuid not null references project(id) on delete cascade,
+    claim_id        uuid references extracted_claim(id) on delete set null,
+    source_message_id uuid references message(id) on delete set null,  -- the citation
+
+    rule_key        text not null,        -- 'done_but_not_invoiced', 'unanswered_question', ...
+    headline        text not null,        -- shown in the Attention panel
+    detail          text,
+    proposed_action jsonb not null default '{}'::jsonb,  -- {type, target_id, params}
+    confidence      numeric(4,3) check (confidence between 0 and 1),
+
+    status          suggestion_status not null default 'open',
+    resolved_by     uuid references user_account(id),
+    resolved_at     timestamptz,
+    -- Accept/dismiss history is the only honest measure of whether the agent is any
+    -- good. Track it from day one (docs/11).
+
+    created_at      timestamptz not null default now()
+);
+
+create index on suggestion (project_id) where status = 'open';
+create index on suggestion (rule_key, status);      -- per-rule accept rate
+create index on suggestion (created_at desc);
 
 
 -- =============================================================================
@@ -745,6 +864,49 @@ join project p       on p.id = br.project_id
 join bid_invite bi   on bi.bid_request_id = br.id and bi.revoked_at is null
 join partner pa      on pa.id = bi.partner_id
 left join bid b      on b.bid_invite_id = bi.id and b.status = 'submitted';
+
+
+-- The global "needs attention" queue: open agent suggestions across all jobs,
+-- with the message that triggered each one (docs/11).
+create view v_needs_attention as
+select
+    s.id            as suggestion_id,
+    s.project_id,
+    p.code          as project_code,
+    p.address_line1 as job_address,
+    cc.name         as client_name,
+    s.rule_key,
+    s.headline,
+    s.detail,
+    s.confidence,
+    s.proposed_action,
+    m.body          as source_message,
+    coalesce(m.from_display_name, ct.full_name, pa.name) as said_by,
+    m.created_at    as said_at,
+    s.created_at
+from suggestion s
+join project p          on p.id = s.project_id
+join client_company cc  on cc.id = p.client_company_id
+left join message m     on m.id = s.source_message_id
+left join contact ct    on ct.id = m.from_contact_id
+left join partner pa    on pa.id = m.from_partner_id
+where s.status = 'open';
+
+
+-- Per-rule accept rate. The honest measure of whether the agent is any good;
+-- a rule that gets dismissed most of the time is noise and should be retired.
+create view v_agent_rule_performance as
+select
+    rule_key,
+    count(*)                                            as total,
+    count(*) filter (where status = 'accepted')         as accepted,
+    count(*) filter (where status = 'dismissed')        as dismissed,
+    round(
+        count(*) filter (where status = 'accepted')::numeric
+        / nullif(count(*) filter (where status in ('accepted','dismissed')), 0)
+    , 3)                                                as accept_rate
+from suggestion
+group by rule_key;
 
 
 -- =============================================================================

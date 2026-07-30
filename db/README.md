@@ -14,13 +14,18 @@ applies clean, and the smoke test exercises the full lifecycle: intake → desig
 quote → milestones → tasks → inspection → invoicing → payout → change order.
 
 The smoke test is worth reading before the schema. It walks one job — a full remodel at 412 Maple
-St for Ridgeline GC — through every table, and its output shows the three views doing the work
-they exist for:
+St for Ridgeline GC — through every table, and its output shows the views doing the work they
+exist for:
 
 - **Bid Board** — distinguishes *bid received* / *opened, no bid* / *not opened*, which is what
   turns chasing vendors into chasing one vendor
 - **Open receivables** — excludes the paid invoice, buckets the overdue one by age
 - **Today's schedule** — shows per task whether the rep and the crew have actually been told
+- **Project thread** — both WhatsApp groups, inbound and outbound, senders identified
+- **Service window** — which group can be messaged free-form and which needs a template
+- **Needs attention** — agent suggestions, each citing the message that triggered it
+- **Rule performance** — per-rule accept rate, the honest measure of whether the agent works
+- **Margin** — the same quote shown as markup-on-cost and as gross margin, side by side
 
 ## Running it yourself
 
@@ -34,10 +39,11 @@ Requires `pgcrypto` and `citext`, both standard on Supabase and in contrib.
 
 ## Before this becomes a real migration
 
-Two open questions change columns here — see [docs/09](../docs/09-open-questions.md):
+Two open questions change values here — see [docs/09](../docs/09-open-questions.md):
 
-- **#2, margin.** `quote.margin_type` / `margin_value` support percent, fixed amount, or manual.
-  Which one is the default is undecided.
+- **#2, margin.** `org_setting.default_markup_pct` ships at 50 with markup-on-cost semantics
+  (`price = cost × 1.5`). If "50%" was meant as gross margin, that default is wrong — the column
+  stays, the number changes.
 - **#4, milestone percentages.** `milestone_template.client_pct` and `payout_pct` ship null. The
   structures are right; the numbers were never specified.
 

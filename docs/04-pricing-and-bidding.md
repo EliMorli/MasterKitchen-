@@ -24,7 +24,7 @@ rep."*
                 ▼
            TOTAL COST
                 │
-                +  MARGIN   ← the rule was never stated. See open question #2.
+                +  MARGIN   ← a percentage, default 50%, always editable
                 │
                 ▼
         ONE FLAT NUMBER  ──►  WhatsApp to the sales rep
@@ -58,19 +58,50 @@ implicit rules actually were.
 
 Q14: no floor on job size, at least for now. `quote.price` needs no validation beyond > 0.
 
-## Margin — the open question
+## Margin
 
-"We put our margin on it" is the only description available. It is unresolved whether margin is:
+Resolved: **a percentage on cost, the same most of the time, defaulting to 50%, and always
+adjustable and editable.**
 
-- a fixed percentage of cost,
-- a percentage that varies by job type or client,
-- a fixed dollar amount, or
-- pure judgment per job.
+So the quoting flow is: know the cost, apply the default percentage automatically, and let the
+owner override either the percentage or the final price outright. "Editable" was emphatic and
+should be taken literally — the computed number is a starting point, never a lock.
 
-The schema supports all of them: `margin_type` (`percent` | `amount`), `margin_value`, and a
-resolved `margin_amount` snapshot. A default can be set per client company and overridden per
-quote. This must be answered before the quoting screen is built — see
-[09](09-open-questions.md) #2.
+Implementation:
+
+- `default_markup_pct` on the company settings, seeded at 50, overridable per client company
+- `margin_value` on each quote, pre-filled from the default, editable
+- `price` directly editable too — typing a final number back-solves the percentage
+- The resolved `margin_amount` is snapshotted on the quote, so historical quotes stay accurate
+  when the default changes later
+
+### One thing to nail down: 50% of what?
+
+"50%" is ambiguous in a way that's worth two minutes now rather than an argument later. On a
+$35,200 cost:
+
+| Reading | Formula | Price | Gross margin |
+| --- | --- | --- | --- |
+| **50% markup on cost** | `cost × 1.50` | **$52,800** | 33.3% |
+| **50% gross margin** | `cost ÷ 0.50` | **$70,400** | 50% |
+
+That's a $17,600 difference on one kitchen. Both are called "50%" in the trades.
+
+The design answer is to make it impossible to get wrong: **the quote screen shows both numbers
+live.** Enter the cost and the percentage, and the screen displays the resulting price *and* the
+resulting gross margin percentage side by side.
+
+```
+   Cost           $35,200
+   Markup            50 %          ← editable
+   ─────────────────────────
+   Price          $52,800          ← editable
+   Gross margin     33.3 %         (of price)
+```
+
+Nobody has to remember which convention is in use, because both are on screen. The stored input
+is markup-on-cost; see [09 #2](09-open-questions.md) to confirm that's the intended reading before
+the default gets seeded.
 
 ## Change orders
 
