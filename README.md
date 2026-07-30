@@ -1,11 +1,63 @@
-# Master Kitchen — System Spec
+# Master Kitchen
 
-This repo holds the build specification for Master Kitchen's operations system, derived
-from the discovery questionnaire answered by the owners (July 2026).
+Operations system for Master Kitchen — jobs, pricing, scheduling, invoicing and the
+WhatsApp comms that hold it all together.
 
-**There is no application code here yet.** This is the "measure twice" pass: the answers
-turned into a data model, a job lifecycle, and a set of screens concrete enough to build
-from without guessing.
+Next.js (App Router) + Supabase + Vercel. The spec it was built from is in
+[`docs/`](docs/) and is still the reference for *why* things work the way they do.
+
+## Running it
+
+```sh
+npm install
+cp .env.example .env.local     # fill in the Supabase URL and anon key
+npm run dev
+```
+
+| Command | |
+| --- | --- |
+| `npm run dev` | local dev server |
+| `npm run build` | production build |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run lint` | eslint |
+| `npm run e2e` | full browser walkthrough against a running server |
+
+The end-to-end test in [`tests/e2e.mjs`](tests/e2e.mjs) drives a real browser through the
+whole business: sign in, add a client and rep, create a job, send the designer, put the
+design out to bid, submit a vendor price from the tokenized portal, select it, price the
+job, win it, reach a milestone, draft and send the invoice, schedule a task, post a crew
+update through the job link, and watch the checks flag it. 25 assertions.
+
+## The shape of it
+
+| Screen | What it's for |
+| --- | --- |
+| **Dashboard** | Today's work, money at a glance, and what needs attention |
+| **Outbox** | Every message waiting to go out, reviewed in one pass |
+| **Schedule** | Mon–Sat week view; a day to a week out is normal |
+| **Jobs** | One kitchen at one address, with tabs for bids, quote, schedule, money and comms |
+| **Portal** | The Bid Board — who was asked, who opened it, who answered |
+| **Money** | Receivables with aging, drafts waiting to send, crew payouts |
+| `/bid/{token}` | Vendor's one page. No account. |
+| `/j/{token}` | Crew's upload link, pinned in their WhatsApp group. No account. |
+
+## Two things worth knowing before you read the code
+
+**Nothing sends itself.** Scheduling a task, passing an inspection or reaching a
+milestone all *draft* a message or an invoice; releasing it is a person pressing a
+button. That is not timidity — it is how the owners described wanting to work, and an
+agent that silently invoices a GC creates a problem no efficiency gain repays.
+
+**Vendors and crews never log in.** They get a tokenized link, and the scoping lives in
+the database rather than the app — see [`supabase/README.md`](supabase/README.md). There
+is deliberately no service-role key in this codebase.
+
+---
+
+# The spec
+
+The rest of this file is the discovery synthesis the app was built from. It is still
+current, and still the place to look when a decision seems arbitrary.
 
 ## What Master Kitchen does
 
