@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { Empty, StatCard, Table, Topbar } from "@/components/ui";
 import { money, num } from "@/lib/format";
@@ -188,7 +187,7 @@ export default function PulsePage() {
 
   return (
     <>
-      <Topbar title="Pulse" subtitle="The founder's glance — money now, money coming, and who's quiet." />
+      <Topbar title="Pulse" />
 
       <p className="mb-2 text-xs font-bold uppercase tracking-wide text-ink-500">Money now</p>
       <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -266,7 +265,7 @@ export default function PulsePage() {
             <div className="card">
               <Empty
                 title={loading ? "Loading…" : "No crew history yet"}
-                hint="Assign a crew on each job; rate them when it completes. The leaderboard builds itself."
+                hint="Rate crews when their jobs complete."
               />
             </div>
           ) : (
@@ -299,11 +298,6 @@ export default function PulsePage() {
         </section>
       </div>
 
-      <p className="muted mt-6 text-xs">
-        Ratings come from the one-tap prompt when a job completes. Once WhatsApp is
-        connected, group conversations land on each job too — so the story behind a
-        rating is one click away on the <Link href="/jobs" className="underline">job&apos;s activity</Link>.
-      </p>
     </>
   );
 }

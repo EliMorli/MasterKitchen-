@@ -102,7 +102,7 @@ export default function SettingsPage() {
                 </div>
                 <Field
                   label="How clients pay you"
-                  hint="Printed on every invoice — this is half of what gets them paid."
+                  hint="Printed on every invoice."
                 >
                   <textarea
                     rows={2}
@@ -187,12 +187,6 @@ export default function SettingsPage() {
             </span>
           </div>
 
-          <p className="muted text-sm">
-            The whole app is wired for the API already — group creation from each
-            job, one-tap sends, and inbound messages landing on the right job&apos;s
-            activity. Connecting is configuration, not construction:
-          </p>
-
           <ol className="list-decimal space-y-2 pl-5 text-sm text-ink-700">
             <li>
               Create a Meta Business app with the <strong>WhatsApp</strong> product and
@@ -226,14 +220,6 @@ export default function SettingsPage() {
             </Field>
           ) : null}
 
-          <div className="rounded-md bg-ink-50 p-3 text-xs text-ink-600">
-            <p className="font-semibold text-ink-800">While not connected:</p>
-            <p className="mt-1">
-              Every send button falls back to copy-and-open — nothing is blocked.
-              The moment the credentials land, the same buttons send for real and
-              the groups start writing themselves into each job&apos;s activity.
-            </p>
-          </div>
         </section>
       </div>
     </>

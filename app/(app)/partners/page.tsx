@@ -31,7 +31,6 @@ export default function PartnersPage() {
     <>
       <Topbar
         title="Vendors & crews"
-        subtitle="Who prices the work and who does it."
         action={
           <button onClick={() => setModal("new")} className="btn-brand">
             <Plus size={16} /> Add

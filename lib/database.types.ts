@@ -158,6 +158,8 @@ export type Database = {
           id: string
           name: string
           note: string | null
+          portal_url: string | null
+          portal_url_expires: string | null
           project_id: string
           source: string
           storage_path: string | null
@@ -168,6 +170,8 @@ export type Database = {
           id?: string
           name: string
           note?: string | null
+          portal_url?: string | null
+          portal_url_expires?: string | null
           project_id: string
           source?: string
           storage_path?: string | null
@@ -178,6 +182,8 @@ export type Database = {
           id?: string
           name?: string
           note?: string | null
+          portal_url?: string | null
+          portal_url_expires?: string | null
           project_id?: string
           source?: string
           storage_path?: string | null

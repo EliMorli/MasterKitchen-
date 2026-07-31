@@ -94,7 +94,7 @@ export default function JobsPage() {
     <>
       <Topbar
         title="Jobs"
-        subtitle={loading ? "Loading…" : `${projects.length} active — drag a card to move it forward`}
+        subtitle={loading ? "Loading…" : `${projects.length} active`}
         action={
           <button onClick={() => setCreating(true)} className="btn-brand">
             <Plus size={16} /> New job

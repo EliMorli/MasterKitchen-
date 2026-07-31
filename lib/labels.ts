@@ -52,6 +52,17 @@ export const DOC_TAGS: Database["public"]["Enums"]["doc_tag"][] = [
   "other",
 ];
 
+/** What a price link is for. Stamped on the request and shown on the vendor's page. */
+export const TRADES = [
+  "full job",
+  "electrical",
+  "plumbing",
+  "cabinets",
+  "countertops",
+  "demo",
+  "other",
+];
+
 export const PARTNER_KINDS = [
   "crew",
   "cabinet vendor",

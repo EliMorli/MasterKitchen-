@@ -14,6 +14,7 @@ type Portal = {
   amount: number | null;
   lead_days: number | null;
   notes: string | null;
+  docs: { name: string; url: string }[];
 };
 
 /**
@@ -35,6 +36,7 @@ export default async function BidPage({
   const { data } = await supabase.rpc("portal_get_price", { p_token: token });
   if (!data) notFound();
   const portal = data as unknown as Portal;
+  portal.docs ??= [];
   const closed = portal.status === "closed";
 
   return (
@@ -66,6 +68,27 @@ export default async function BidPage({
             ) : null}
           </dl>
         </div>
+
+        {portal.docs.length ? (
+          <div className="card-pad mt-4">
+            <h2 className="text-sm font-semibold text-ink-900">The design</h2>
+            <ul className="mt-2 space-y-2">
+              {portal.docs.map((d) => (
+                <li key={d.url}>
+                  <a
+                    href={d.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between rounded-md border border-ink-200 px-3 py-2.5 text-sm font-medium text-ink-900 hover:bg-ink-50"
+                  >
+                    {d.name}
+                    <span className="text-xs text-ink-400">open ↗</span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
         {saved ? (
           <div className="card-pad mt-4 border-emerald-200 bg-emerald-50">

@@ -53,7 +53,7 @@ export default function DocumentsPage() {
 
   return (
     <>
-      <Topbar title="Documents" subtitle="Designs, permits, photos and crew updates across every job." />
+      <Topbar title="Documents" />
 
       <div className="mb-4 flex flex-wrap gap-2">
         <input
@@ -76,7 +76,7 @@ export default function DocumentsPage() {
         <div className="card">
           <Empty
             title={loading ? "Loading…" : "Nothing here"}
-            hint="Upload from a job's Documents tab — the design especially, so nobody scrolls WhatsApp for it again."
+            hint="Upload from a job's Documents tab."
           />
         </div>
       ) : (

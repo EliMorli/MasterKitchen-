@@ -1,4 +1,5 @@
 import { chromium } from "playwright";
+import fs from "node:fs";
 
 // Walks the whole business through the real UI against the live database:
 // client → vendor → job on the board → project page (save, stage strip,
@@ -11,6 +12,14 @@ const BASE = process.env.BASE ?? "http://localhost:3100";
 const EMAIL = process.env.E2E_EMAIL ?? "elimadmorli@gmail.com";
 const PASSWORD = process.env.E2E_PASSWORD ?? "MasterKitchen2026!";
 const SHOTS = process.env.SHOTS ?? "/tmp/mk-e2e";
+
+// A tiny PDF fixture: the design file a vendor sees from their price link.
+fs.mkdirSync(SHOTS, { recursive: true });
+const DESIGN = `${SHOTS}/design.pdf`;
+fs.writeFileSync(
+  DESIGN,
+  "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF",
+);
 
 const results = [];
 const check = (name, ok, extra = "") => {
@@ -107,23 +116,38 @@ try {
   await page.waitForTimeout(700);
   check("event added", await see(page, "Designer visit"));
 
-  // Vendor price: ask, open link, submit
+  // Design upload — this is what the vendor sees from their price link
+  await page.click('button:has-text("Documents")');
+  await page.waitForTimeout(500);
+  await page.setInputFiles('input[type="file"]', DESIGN);
+  await page.waitForTimeout(1500);
+  check("design uploaded", await see(page, "design.pdf"));
+  await page.click('button:has-text("Overview")');
+  await page.waitForTimeout(500);
+
+  // Vendor price: pick the trade, ask, open link, submit
   await page.click('button:has-text("Ask for prices")');
+  await page.locator(".fixed select").first().selectOption("cabinets");
   await page.locator('.fixed input[type="checkbox"]').first().check();
   await page.click('.fixed button:has-text("Create")');
-  await page.waitForTimeout(800);
+  await page.waitForTimeout(1200);
   check("price request created", await see(page, "not opened"));
+  check("trade on the request", await see(page, "cabinets"));
 
   // Grab the token from the DB via the copy button's clipboard is fiddly;
   // read it from the Copy Link handler instead: click copies to clipboard.
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.click('button:has-text("Link")');
+  // The copy handler first refreshes the design links for the portal.
+  await page.waitForTimeout(1200);
   const bidUrl = await page.evaluate(() => navigator.clipboard.readText());
   check("price link copied", bidUrl.includes("/bid/"), bidUrl.slice(0, 60));
 
   const vendor = await context.newPage();
   await vendor.goto(bidUrl.replace(/^https?:\/\/[^/]+/, BASE), { waitUntil: "networkidle" });
   check("vendor page loads", await see(vendor, "412 Maple St"));
+  check("vendor sees the trade", await see(vendor, "cabinets"));
+  check("vendor sees the design", await see(vendor, "design.pdf"));
   await vendor.fill('input[name="amount"]', "21000");
   await vendor.click('button:has-text("Send price")');
   await vendor.waitForLoadState("networkidle");

@@ -37,7 +37,6 @@ export default function ClientsPage() {
     <>
       <Topbar
         title="Clients"
-        subtitle="The GCs you work for — and the rep inside each one."
         action={
           <button onClick={() => setModal("new")} className="btn-brand">
             <Plus size={16} /> New client

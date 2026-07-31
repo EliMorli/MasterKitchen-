@@ -77,7 +77,7 @@ export default function MoneyPage() {
 
   return (
     <>
-      <Topbar title="Money" subtitle="Who owes us, what we spent, what each job made." />
+      <Topbar title="Money" />
 
       <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard label="Waiting to be paid" value={money(outstanding)} />

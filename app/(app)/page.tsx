@@ -119,7 +119,6 @@ export default function Dashboard() {
           {ourMove.length === 0 ? (
             <Empty
               title={loading ? "Loading…" : "Nothing on us right now"}
-              hint="When a job needs an action from this office, it shows up here."
             />
           ) : (
             <ul className="divide-y divide-ink-100">

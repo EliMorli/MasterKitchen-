@@ -5,7 +5,7 @@ import Link from "next/link";
 import { CheckCircle2, Circle, Copy, ExternalLink, Plus, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Badge, Empty, Field, Modal } from "@/components/ui";
-import { CO_TONE, DOC_TAGS, EVENT_PRESETS, PHASES, type Phase } from "@/lib/labels";
+import { CO_TONE, DOC_TAGS, EVENT_PRESETS, PHASES, TRADES, type Phase } from "@/lib/labels";
 import { dateTime, money, moneyExact, num, shortDate, timeOfDay } from "@/lib/format";
 import { nextStep } from "@/lib/next-step";
 import { logActivity } from "@/lib/activity";
@@ -30,6 +30,40 @@ type Partner = { id: string; name: string; kind: string };
 
 const TABS = ["Overview", "Money", "Change orders", "Documents", "Activity"] as const;
 type Tab = (typeof TABS)[number];
+
+/**
+ * Mint fresh 30-day signed URLs for this job's design files and store them on
+ * the document rows, so the vendor's price link can show the design without
+ * any service key. Called whenever a price link is created or copied.
+ */
+async function refreshPortalDocs(
+  supabase: ReturnType<typeof createClient>,
+  projectId: string,
+) {
+  const { data: designs } = await supabase
+    .from("document")
+    .select("id, storage_path")
+    .eq("project_id", projectId)
+    .eq("tag", "design")
+    .not("storage_path", "is", null);
+  if (!designs?.length) return;
+
+  const THIRTY_DAYS = 60 * 60 * 24 * 30;
+  const expires = new Date(Date.now() + THIRTY_DAYS * 1000).toISOString();
+  await Promise.all(
+    designs.map(async (d) => {
+      const { data } = await supabase.storage
+        .from("documents")
+        .createSignedUrl(d.storage_path!, THIRTY_DAYS);
+      if (data?.signedUrl) {
+        await supabase
+          .from("document")
+          .update({ portal_url: data.signedUrl, portal_url_expires: expires })
+          .eq("id", d.id);
+      }
+    }),
+  );
+}
 
 /**
  * The project page — the main course. The stage strip on top is the whole
@@ -537,7 +571,7 @@ function OverviewTab({
           </button>
         </div>
         {events.length === 0 ? (
-          <Empty title="Nothing scheduled" hint="Demo, inspection, installs — they all go here and on the calendar." />
+          <Empty title="Nothing scheduled" />
         ) : (
           <ul className="divide-y divide-ink-100">
             {events.map((ev) => (
@@ -590,7 +624,7 @@ function OverviewTab({
           </button>
         </div>
         {prices.length === 0 ? (
-          <Empty title="Nobody asked yet" hint="Each vendor gets a one-page link. They type a number; it lands here." />
+          <Empty title="Nobody asked yet" />
         ) : (
           <ul className="divide-y divide-ink-100">
             {prices.map((pr) => (
@@ -625,9 +659,10 @@ function OverviewTab({
                       </>
                     ) : (
                       <button
-                        onClick={() =>
-                          copy(`${window.location.origin}/bid/${encodeURIComponent(pr.token)}`)
-                        }
+                        onClick={async () => {
+                          await refreshPortalDocs(supabase, project.id);
+                          copy(`${window.location.origin}/bid/${encodeURIComponent(pr.token)}`);
+                        }}
                         className="btn-ghost btn-sm"
                       >
                         <Copy size={13} /> Link
@@ -644,10 +679,6 @@ function OverviewTab({
 
       <section className="card-pad space-y-3">
         <h2 className="h2">WhatsApp</h2>
-        <p className="muted text-xs">
-          Paste the group links once. Every button below writes the message for you —
-          copy, it opens the group, you hit send.
-        </p>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label={`Sales rep group${project.wa_sales_group_id ? " · connected ✓" : ""}`}>
             <input
@@ -691,11 +722,7 @@ function OverviewTab({
           </Field>
         </div>
 
-        {msgs.length === 0 ? (
-          <p className="muted text-xs">
-            Schedule something or set a price and ready-made messages show up here.
-          </p>
-        ) : (
+        {msgs.length === 0 ? null : (
           <ul className="space-y-2">
             {msgs.map((m) => (
               <li key={m.label} className="rounded-md border border-ink-200 p-2.5">
@@ -736,7 +763,6 @@ function OverviewTab({
         {project.upload_token ? (
           <div className="border-t border-ink-100 pt-3">
             <p className="text-xs font-semibold text-ink-700">Crew update link</p>
-            <p className="muted text-xs">Pin it in the crew group — their updates land on this job.</p>
             <button
               onClick={() =>
                 copy(`${window.location.origin}/u/${encodeURIComponent(project.upload_token!)}`)
@@ -867,8 +893,10 @@ function AskPricesModal({
   onSaved: () => void;
 }) {
   const supabase = createClient();
-  const [scope, setScope] = useState("full job");
+  const [trade, setTrade] = useState("full job");
+  const [custom, setCustom] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const scope = trade === "other" ? custom.trim() || "other" : trade;
 
   async function send() {
     if (picked.size === 0) return;
@@ -876,6 +904,7 @@ function AskPricesModal({
       [...picked].map((partner_id) => ({ project_id: projectId, partner_id, scope })),
     );
     logActivity(supabase, projectId, "price", `Asked ${picked.size} vendor${picked.size === 1 ? "" : "s"} for a price (${scope})`);
+    await refreshPortalDocs(supabase, projectId);
     onSaved();
   }
 
@@ -894,8 +923,25 @@ function AskPricesModal({
     >
       <div className="space-y-4">
         <Field label="What are they pricing?">
-          <input value={scope} onChange={(e) => setScope(e.target.value)} className="input" />
+          <select value={trade} onChange={(e) => setTrade(e.target.value)} className="input capitalize">
+            {TRADES.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
         </Field>
+        {trade === "other" ? (
+          <Field label="Describe it">
+            <input
+              autoFocus
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              className="input"
+              placeholder="Tile backsplash"
+            />
+          </Field>
+        ) : null}
         <Field label="Who to ask" hint="Each gets their own link. Nobody sees anyone else's number.">
           <div className="grid gap-2 sm:grid-cols-2">
             {partners
@@ -1084,7 +1130,7 @@ function MoneyTab({
           </button>
         </header>
         {expenses.length === 0 ? (
-          <Empty title="No expenses" hint="Permits, dumpsters, materials we bought — anything we paid that isn't the crew." />
+          <Empty title="No expenses" />
         ) : (
           <ul className="divide-y divide-ink-100">
             {expenses.map((e) => (
@@ -1227,10 +1273,14 @@ function InvoiceModal({
     });
 
     const path = `${project.id}/invoices/${invoiceId}.pdf`;
-    await supabase.storage.from("documents").upload(path, blob, {
+    const { error: upErr } = await supabase.storage.from("documents").upload(path, blob, {
       contentType: "application/pdf",
       upsert: true,
     });
+    if (upErr) {
+      alert(`The invoice saved, but the PDF could not be written: ${upErr.message}`);
+      return;
+    }
 
     const { data: existing } = await supabase
       .from("document")
@@ -1573,7 +1623,6 @@ function ChangeOrdersTab({
       <header className="flex items-center justify-between border-b border-ink-200 px-5 py-3">
         <div>
           <h2 className="h2">Change orders</h2>
-          <p className="muted text-xs">Extra work found after the design was fixed.</p>
         </div>
         <button onClick={() => setModal("new")} className="btn-brand btn-sm">
           <Plus size={14} /> Add
@@ -1754,7 +1803,6 @@ function DocumentsTab({
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-200 px-5 py-3">
         <div>
           <h2 className="h2">Documents</h2>
-          <p className="muted text-xs">Designs, permits, photos, contracts — and crew updates.</p>
         </div>
         <div className="flex items-center gap-2">
           <select value={tag} onChange={(e) => setTag(e.target.value as Doc["tag"])} className="input w-auto py-1.5 text-xs">
@@ -1780,7 +1828,7 @@ function DocumentsTab({
       </header>
 
       {docs.filter((d) => d.source !== "note").length === 0 ? (
-        <Empty title="Nothing here yet" hint="The design is the thing you scroll WhatsApp for — put it here instead." />
+        <Empty title="Nothing here yet" />
       ) : (
         <ul className="divide-y divide-ink-100">
           {docs.filter((d) => d.source !== "note").map((d) => (
@@ -1867,7 +1915,7 @@ function ActivityTab({
         </button>
       </div>
       {acts.length === 0 ? (
-        <Empty title="Nothing yet" hint="Everything that happens to this job gets written here as it happens." />
+        <Empty title="Nothing yet" />
       ) : (
         <ul className="divide-y divide-ink-100">
           {acts.map((a) => (
