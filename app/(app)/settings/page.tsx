@@ -15,14 +15,12 @@ export default function SettingsPage() {
   const [org, setOrg] = useState<Org | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [wa, setWa] = useState<{ connected: boolean; webhookReady: boolean } | null>(null);
-  const [origin, setOrigin] = useState("");
   const [flash, setFlash] = useState("");
 
   useEffect(() => {
     supabase.from("org_setting").select("*").maybeSingle().then(({ data }) => setOrg(data));
     supabase.from("user_account").select("*").order("created_at").then(({ data }) => setUsers(data ?? []));
     waStatus().then(setWa).catch(() => {});
-    setOrigin(window.location.origin);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -186,28 +184,6 @@ export default function SettingsPage() {
               {wa === null ? "checking…" : wa.connected ? "Connected" : "Not connected"}
             </span>
           </div>
-
-          <ol className="list-decimal space-y-2 pl-5 text-sm text-ink-700">
-            <li>
-              Create a Meta Business app with the <strong>WhatsApp</strong> product and
-              get the business verified (required for groups).
-            </li>
-            <li>
-              In Vercel, set{" "}
-              <code className="rounded bg-ink-100 px-1 text-xs">WHATSAPP_ACCESS_TOKEN</code>,{" "}
-              <code className="rounded bg-ink-100 px-1 text-xs">WHATSAPP_PHONE_NUMBER_ID</code>{" "}
-              and <code className="rounded bg-ink-100 px-1 text-xs">WHATSAPP_VERIFY_TOKEN</code>,
-              then redeploy.
-            </li>
-            <li>
-              In Meta&apos;s console, point the webhook at
-              <code className="mt-1 block break-all rounded bg-ink-100 px-2 py-1 text-xs">
-                {origin ? `${origin}/api/whatsapp/webhook` : "…/api/whatsapp/webhook"}
-              </code>
-              using the same verify token, and subscribe to <em>messages</em>.
-            </li>
-            <li>Paste that verify token here too, so inbound messages clear the gate:</li>
-          </ol>
 
           {org ? (
             <Field label="Webhook verify token">
