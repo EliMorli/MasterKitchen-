@@ -5,16 +5,12 @@ import Link from "next/link";
 import { CheckCircle2, Circle, Copy, ExternalLink, Plus, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Badge, Empty, Field, Modal } from "@/components/ui";
-import {
-  CO_TONE,
-  DOC_TAGS,
-  EVENT_PRESETS,
-  INVOICE_TONE,
-  PHASES,
-  type Phase,
-} from "@/lib/labels";
-import { dateTime, money, num, shortDate, timeOfDay } from "@/lib/format";
+import { CO_TONE, DOC_TAGS, EVENT_PRESETS, PHASES, type Phase } from "@/lib/labels";
+import { dateTime, money, moneyExact, num, shortDate, timeOfDay } from "@/lib/format";
 import { nextStep } from "@/lib/next-step";
+import { logActivity } from "@/lib/activity";
+import { buildInvoicePdf } from "@/lib/invoice-pdf";
+import { waCreateGroup, waSendToGroup, waStatus } from "@/lib/actions/whatsapp";
 import type { Database } from "@/lib/database.types";
 
 type DB = Database["public"]["Tables"];
@@ -25,6 +21,9 @@ type Expense = DB["expense"]["Row"];
 type CO = DB["change_order"]["Row"];
 type Doc = DB["document"]["Row"];
 type PriceReq = DB["price_request"]["Row"] & { partner: { name: string } | null };
+type Payment = DB["payment"]["Row"];
+type Act = DB["activity"]["Row"];
+type Org = DB["org_setting"]["Row"];
 type Company = { id: string; name: string };
 type Rep = { id: string; name: string; client_company_id: string; phone: string | null };
 type Partner = { id: string; name: string; kind: string };
@@ -51,13 +50,18 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [companies, setCompanies] = useState<Company[]>([]);
   const [reps, setReps] = useState<Rep[]>([]);
   const [partners, setPartners] = useState<Partner[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [acts, setActs] = useState<Act[]>([]);
+  const [org, setOrg] = useState<Org | null>(null);
+  const [waOn, setWaOn] = useState(false);
+  const [rating, setRating] = useState(false);
   const [tab, setTab] = useState<Tab>("Overview");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [flash, setFlash] = useState("");
 
   const reload = useCallback(async () => {
-    const [p, ev, inv, ex, co, dc, pr, comp, rep, part] = await Promise.all([
+    const [p, ev, inv, ex, co, dc, pr, comp, rep, part, pay, act, orgRow] = await Promise.all([
       supabase.from("project").select("*").eq("id", id).maybeSingle(),
       supabase.from("event").select("*, partner(name)").eq("project_id", id).order("date"),
       supabase.from("invoice").select("*").eq("project_id", id).order("created_at"),
@@ -68,6 +72,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       supabase.from("client_company").select("id, name").order("name"),
       supabase.from("contact").select("id, name, client_company_id, phone").order("name"),
       supabase.from("partner").select("id, name, kind").order("name"),
+      supabase.from("payment").select("*").eq("project_id", id).order("paid_on"),
+      supabase.from("activity").select("*").eq("project_id", id).order("created_at", { ascending: false }).limit(200),
+      supabase.from("org_setting").select("*").maybeSingle(),
     ]);
     setProject((p.data as Project) ?? null);
     setEvents((ev.data as Event[]) ?? []);
@@ -79,8 +86,15 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     setCompanies(comp.data ?? []);
     setReps(rep.data ?? []);
     setPartners(part.data ?? []);
+    setPayments(pay.data ?? []);
+    setActs(act.data ?? []);
+    setOrg(orgRow.data ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  useEffect(() => {
+    waStatus().then((s) => setWaOn(s.connected)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     reload();
@@ -114,6 +128,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     if (!error) {
       setDirty(false);
       note("Saved");
+      logActivity(supabase, project.id, "edit",
+        `Job saved — price ${money(project.price)}, cost ${money(project.cost)}`);
     }
   }
 
@@ -124,6 +140,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       .from("project")
       .update({ phase, updated_at: new Date().toISOString() })
       .eq("id", project.id);
+    logActivity(supabase, project.id, "phase", `Moved to ${phase.replace("_", " ")}`, { to: phase });
+    // Two seconds of honesty at the moment it's freshest: rate the crew.
+    if (phase === "complete" && project.crew_id && !project.crew_rating) setRating(true);
   }
 
   function note(text: string) {
@@ -206,6 +225,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         {tab === "Overview" ? (
           <OverviewTab
             project={project}
+            waOn={waOn}
             patch={patch}
             companies={companies}
             companyReps={companyReps}
@@ -224,10 +244,14 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           <MoneyTab
             project={project}
             invoices={invoices}
+            payments={payments}
             expenses={expenses}
             approvedCOs={approvedCOs}
             expenseTotal={expenseTotal}
             profit={profit}
+            org={org}
+            companyName={companies.find((c) => c.id === project.client_company_id)?.name ?? null}
+            repName={rep?.name ?? null}
             reload={reload}
           />
         ) : null}
@@ -238,18 +262,21 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           <DocumentsTab project={project} docs={docs} reload={reload} note={note} />
         ) : null}
         {tab === "Activity" ? (
-          <ActivityTab
-            project={project}
-            events={events}
-            invoices={invoices}
-            expenses={expenses}
-            cos={cos}
-            docs={docs}
-            prices={prices}
-            reload={reload}
-          />
+          <ActivityTab project={project} acts={acts} reload={reload} />
         ) : null}
       </div>
+
+      {rating ? (
+        <RatingModal
+          project={project}
+          crewName={partners.find((x) => x.id === project.crew_id)?.name ?? "the crew"}
+          onClose={() => setRating(false)}
+          onSaved={async () => {
+            setRating(false);
+            await reload();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -320,6 +347,7 @@ function StageStrip({ current, onChange }: { current: Phase; onChange: (p: Phase
  * ------------------------------------------------------------------------- */
 function OverviewTab({
   project,
+  waOn,
   patch,
   companies,
   companyReps,
@@ -334,6 +362,7 @@ function OverviewTab({
   onUseCost,
 }: {
   project: Project;
+  waOn: boolean;
   patch: (f: Partial<Project>) => void;
   companies: Company[];
   companyReps: Rep[];
@@ -361,7 +390,7 @@ function OverviewTab({
   const lastInvoice = invoices[invoices.length - 1];
 
   // Pre-written messages, composed from what the job knows.
-  const msgs: { label: string; text: string; to: string | null }[] = [
+  const msgs: { label: string; text: string; to: string | null; aud: "sales" | "crew" }[] = [
     nextEvent
       ? {
           label: "Schedule update → sales group",
@@ -369,6 +398,7 @@ function OverviewTab({
             nextEvent.time ? ` at ${timeOfDay(nextEvent.time)}` : ""
           } for ${nextEvent.label.toLowerCase()}.`,
           to: project.wa_sales_link,
+          aud: "sales" as const,
         }
       : null,
     nextEvent
@@ -378,6 +408,7 @@ function OverviewTab({
             nextEvent.time ? ` ${timeOfDay(nextEvent.time)}` : ""
           }, ${nextEvent.label.toLowerCase()}.`,
           to: project.wa_crew_link,
+          aud: "crew" as const,
         }
       : null,
     project.price != null
@@ -385,6 +416,7 @@ function OverviewTab({
           label: "Quote → sales group",
           text: `${project.address}: ${money(project.price)}, all in. Let us know to go ahead.`,
           to: project.wa_sales_link,
+          aud: "sales" as const,
         }
       : null,
     lastInvoice
@@ -394,9 +426,10 @@ function OverviewTab({
             lastInvoice.description ? ` (${lastInvoice.description})` : ""
           }.`,
           to: project.wa_sales_link,
+          aud: "sales" as const,
         }
       : null,
-  ].filter(Boolean) as { label: string; text: string; to: string | null }[];
+  ].filter(Boolean) as { label: string; text: string; to: string | null; aud: "sales" | "crew" }[];
 
   return (
     <div className="grid gap-5 lg:grid-cols-2">
@@ -512,6 +545,7 @@ function OverviewTab({
                 <button
                   onClick={async () => {
                     await supabase.from("event").update({ done: !ev.done }).eq("id", ev.id);
+                    if (!ev.done) logActivity(supabase, project.id, "event", `${ev.label} — done ✓`);
                     reload();
                   }}
                   title={ev.done ? "Mark not done" : "Mark done"}
@@ -578,7 +612,11 @@ function OverviewTab({
                       <>
                         <span className="nums text-sm font-bold">{money(pr.amount)}</span>
                         <button
-                          onClick={() => onUseCost(num(pr.amount))}
+                          onClick={() => {
+                            onUseCost(num(pr.amount));
+                            logActivity(supabase, project.id, "price",
+                              `Using ${pr.partner?.name ?? "vendor"}'s price as our cost: ${money(pr.amount)}`);
+                          }}
                           className="btn-primary btn-sm"
                           title="Set as our cost"
                         >
@@ -611,21 +649,45 @@ function OverviewTab({
           copy, it opens the group, you hit send.
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Sales rep group">
+          <Field label={`Sales rep group${project.wa_sales_group_id ? " · connected ✓" : ""}`}>
             <input
               value={project.wa_sales_link ?? ""}
               onChange={(e) => patch({ wa_sales_link: e.target.value || null })}
               className="input text-xs"
               placeholder="https://chat.whatsapp.com/…"
             />
+            {waOn && !project.wa_sales_group_id ? (
+              <button
+                onClick={async () => {
+                  const r = await waCreateGroup(project.id, "sales");
+                  note(r.ok ? "Group created — invite link saved" : `Failed: ${r.error}`);
+                  if (r.ok) reload();
+                }}
+                className="btn-ghost btn-sm mt-1.5"
+              >
+                Create group via API
+              </button>
+            ) : null}
           </Field>
-          <Field label="Crew group">
+          <Field label={`Crew group${project.wa_crew_group_id ? " · connected ✓" : ""}`}>
             <input
               value={project.wa_crew_link ?? ""}
               onChange={(e) => patch({ wa_crew_link: e.target.value || null })}
               className="input text-xs"
               placeholder="https://chat.whatsapp.com/…"
             />
+            {waOn && !project.wa_crew_group_id ? (
+              <button
+                onClick={async () => {
+                  const r = await waCreateGroup(project.id, "crew");
+                  note(r.ok ? "Group created — invite link saved" : `Failed: ${r.error}`);
+                  if (r.ok) reload();
+                }}
+                className="btn-ghost btn-sm mt-1.5"
+              >
+                Create group via API
+              </button>
+            ) : null}
           </Field>
         </div>
 
@@ -639,7 +701,19 @@ function OverviewTab({
               <li key={m.label} className="rounded-md border border-ink-200 p-2.5">
                 <p className="text-xs font-semibold text-ink-700">{m.label}</p>
                 <p className="mt-0.5 text-sm text-ink-800">{m.text}</p>
-                <div className="mt-1.5 flex gap-1.5">
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {waOn && (m.aud === "sales" ? project.wa_sales_group_id : project.wa_crew_group_id) ? (
+                    <button
+                      onClick={async () => {
+                        const r = await waSendToGroup(project.id, m.aud, m.text);
+                        note(r.ok ? "Sent to the group ✓" : `Send failed: ${r.error}`);
+                        if (r.ok) reload();
+                      }}
+                      className="btn-brand btn-sm"
+                    >
+                      Send to group
+                    </button>
+                  ) : null}
                   <button onClick={() => copy(m.text, m.to)} className="btn-primary btn-sm">
                     <Copy size={13} /> Copy {m.to ? "& open group" : ""}
                   </button>
@@ -730,6 +804,7 @@ function EventModal({
       time: time || null,
       partner_id: partnerId || null,
     });
+    logActivity(supabase, projectId, "event", `Scheduled: ${text} — ${shortDate(date)}`);
     onSaved();
   }
 
@@ -800,6 +875,7 @@ function AskPricesModal({
     await supabase.from("price_request").insert(
       [...picked].map((partner_id) => ({ project_id: projectId, partner_id, scope })),
     );
+    logActivity(supabase, projectId, "price", `Asked ${picked.size} vendor${picked.size === 1 ? "" : "s"} for a price (${scope})`);
     onSaved();
   }
 
@@ -853,25 +929,49 @@ function AskPricesModal({
 /* ---------------------------------------------------------------------------
  * Money — invoices and expenses, everything editable, profit in plain sight.
  * ------------------------------------------------------------------------- */
+/** Live status: derived from payments and the due date, never from a dropdown. */
+function invoiceStatus(i: Invoice, payments: Payment[]) {
+  const paid = payments.filter((p) => p.invoice_id === i.id).reduce((s, p) => s + num(p.amount), 0);
+  const balance = num(i.amount) - paid;
+  if (i.status === "draft" && paid === 0) return { label: "draft", tone: "bg-ink-100 text-ink-700", paid, balance };
+  if (balance <= 0 && num(i.amount) > 0) return { label: "paid", tone: "bg-emerald-100 text-emerald-800", paid, balance: 0 };
+  if (paid > 0) return { label: "partial", tone: "bg-brand-100 text-brand-700", paid, balance };
+  if (i.due_at && i.due_at < new Date().toISOString().slice(0, 10))
+    return { label: "overdue", tone: "bg-red-100 text-red-800", paid, balance };
+  return { label: "sent", tone: "bg-sky-100 text-sky-800", paid, balance };
+}
+
 function MoneyTab({
   project,
   invoices,
+  payments,
   expenses,
   approvedCOs,
   expenseTotal,
   profit,
+  org,
+  companyName,
+  repName,
   reload,
 }: {
   project: Project;
   invoices: Invoice[];
+  payments: Payment[];
   expenses: Expense[];
   approvedCOs: number;
   expenseTotal: number;
   profit: number;
+  org: Org | null;
+  companyName: string | null;
+  repName: string | null;
   reload: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState<Invoice | "new" | null>(null);
   const [expenseModal, setExpenseModal] = useState<Expense | "new" | null>(null);
+
+  const revised = num(project.price) + approvedCOs;
+  const invoiced = invoices.filter((i) => i.status !== "draft").reduce((s, i) => s + num(i.amount), 0);
+  const collected = payments.reduce((s, p) => s + num(p.amount), 0);
 
   const nextNumber = useMemo(() => {
     const max = invoices.reduce((m, i) => {
@@ -900,6 +1000,32 @@ function MoneyTab({
             tone={profit >= 0 ? "text-emerald-700" : "text-red-600"}
           />
         </div>
+        {revised > 0 ? (
+          <div className="nums mt-4 grid grid-cols-3 gap-4 border-t border-ink-200 pt-3 text-sm">
+            <div>
+              <p className="muted text-xs">Contract + extras</p>
+              <p className="font-bold">{money(revised)}</p>
+            </div>
+            <div>
+              <p className="muted text-xs">Invoiced</p>
+              <p className="font-bold">
+                {money(invoiced)}{" "}
+                <span className="text-xs font-medium text-ink-500">
+                  ({Math.round((invoiced / revised) * 100)}%)
+                </span>
+              </p>
+            </div>
+            <div>
+              <p className="muted text-xs">Collected</p>
+              <p className="font-bold text-emerald-700">
+                {money(collected)}{" "}
+                <span className="text-xs font-medium text-ink-500">
+                  ({invoiced > 0 ? Math.round((collected / invoiced) * 100) : 0}%)
+                </span>
+              </p>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <section className="card">
@@ -927,8 +1053,22 @@ function MoneyTab({
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2.5">
-                  <span className="nums text-sm font-bold">{money(i.amount)}</span>
-                  <Badge tone={INVOICE_TONE[i.status]}>{i.status}</Badge>
+                  {(() => {
+                    const st = invoiceStatus(i, payments);
+                    return (
+                      <>
+                        <span className="nums text-sm font-bold">
+                          {money(i.amount)}
+                          {st.label === "partial" ? (
+                            <span className="muted ml-1 text-xs font-medium">
+                              ({money(st.balance)} due)
+                            </span>
+                          ) : null}
+                        </span>
+                        <Badge tone={st.tone}>{st.label}</Badge>
+                      </>
+                    );
+                  })()}
                 </div>
               </li>
             ))}
@@ -967,7 +1107,11 @@ function MoneyTab({
       {editing ? (
         <InvoiceModal
           invoice={editing === "new" ? null : editing}
-          projectId={project.id}
+          project={project}
+          payments={editing !== "new" ? payments.filter((p) => p.invoice_id === (editing as Invoice).id) : []}
+          org={org}
+          companyName={companyName}
+          repName={repName}
           nextNumber={nextNumber}
           onClose={() => setEditing(null)}
           onSaved={async () => {
@@ -1010,16 +1154,28 @@ function Line({
   );
 }
 
-/** Every field of an invoice is editable, always — invoices get corrected. */
+/**
+ * Every field editable, always — invoices get corrected. Payments are recorded
+ * here too, and every save regenerates the PDF into the job's Documents tab so
+ * the file is always the current truth.
+ */
 function InvoiceModal({
   invoice,
-  projectId,
+  project,
+  payments,
+  org,
+  companyName,
+  repName,
   nextNumber,
   onClose,
   onSaved,
 }: {
   invoice: Invoice | null;
-  projectId: string;
+  project: Project;
+  payments: Payment[];
+  org: Org | null;
+  companyName: string | null;
+  repName: string | null;
   nextNumber: string;
   onClose: () => void;
   onSaved: () => void;
@@ -1030,44 +1186,173 @@ function InvoiceModal({
     description: invoice?.description ?? "",
     amount: invoice?.amount ?? 0,
     status: invoice?.status ?? ("draft" as Invoice["status"]),
-    issued_at: invoice?.issued_at ?? "",
+    issued_at: invoice?.issued_at ?? new Date().toISOString().slice(0, 10),
     due_at: invoice?.due_at ?? "",
-    paid_at: invoice?.paid_at ?? "",
   });
+  const [payAmount, setPayAmount] = useState("");
+  const [payMethod, setPayMethod] = useState<Payment["method"]>("check");
+  const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
   const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const paid = payments.reduce((s, p) => s + num(p.amount), 0);
+  const balance = num(form.amount) - paid;
 
   function set<K extends keyof typeof form>(k: K, v: (typeof form)[K]) {
     setForm((f) => ({ ...f, [k]: v }));
   }
 
+  /** Regenerate the PDF and file it under Documents (one row per invoice). */
+  async function refreshPdf(invoiceId: string, currentPayments: Payment[]) {
+    const blob = buildInvoicePdf({
+      business: {
+        name: org?.business_name ?? "Master Kitchen",
+        address: org?.address,
+        phone: org?.phone,
+        email: org?.email,
+        paymentInstructions: org?.payment_instructions,
+      },
+      billTo: { company: companyName, rep: repName },
+      jobAddress: [project.address, project.city].filter(Boolean).join(", "),
+      number: form.number.trim(),
+      description: form.description.trim() || null,
+      amount: num(form.amount),
+      issuedAt: form.issued_at || null,
+      dueAt: form.due_at || null,
+      payments: currentPayments.map((p) => ({
+        amount: num(p.amount),
+        method: p.method,
+        paid_on: p.paid_on,
+      })),
+    });
+
+    const path = `${project.id}/invoices/${invoiceId}.pdf`;
+    await supabase.storage.from("documents").upload(path, blob, {
+      contentType: "application/pdf",
+      upsert: true,
+    });
+
+    const { data: existing } = await supabase
+      .from("document")
+      .select("id")
+      .eq("storage_path", path)
+      .maybeSingle();
+    if (existing) {
+      await supabase
+        .from("document")
+        .update({ name: `${form.number.trim()}.pdf`, tag: "invoice" })
+        .eq("id", existing.id);
+    } else {
+      await supabase.from("document").insert({
+        project_id: project.id,
+        name: `${form.number.trim()}.pdf`,
+        tag: "invoice",
+        storage_path: path,
+      });
+    }
+  }
+
   async function save() {
     setSaving(true);
     const row = {
-      project_id: projectId,
+      project_id: project.id,
       number: form.number.trim(),
       description: form.description.trim() || null,
       amount: num(form.amount),
       status: form.status,
       issued_at: form.issued_at || null,
       due_at: form.due_at || null,
-      paid_at: form.paid_at || null,
     };
-    if (invoice) await supabase.from("invoice").update(row).eq("id", invoice.id);
-    else await supabase.from("invoice").insert(row);
+
+    let invoiceId = invoice?.id ?? null;
+    if (invoice) {
+      await supabase.from("invoice").update(row).eq("id", invoice.id);
+      const changed =
+        num(invoice.amount) !== row.amount
+          ? `: ${money(invoice.amount)} → ${money(row.amount)}`
+          : "";
+      logActivity(supabase, project.id, "invoice", `Invoice ${row.number} edited${changed}`);
+    } else {
+      const { data } = await supabase.from("invoice").insert(row).select("id").single();
+      invoiceId = data?.id ?? null;
+      logActivity(supabase, project.id, "invoice",
+        `Invoice ${row.number} created — ${money(row.amount)}`);
+    }
+
+    if (invoiceId) await refreshPdf(invoiceId, payments);
     setSaving(false);
+    onSaved();
+  }
+
+  async function recordPayment() {
+    if (!invoice) return;
+    const amount = Number(payAmount);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    setBusy(true);
+
+    await supabase.from("payment").insert({
+      invoice_id: invoice.id,
+      project_id: project.id,
+      amount,
+      method: payMethod,
+      paid_on: payDate,
+    });
+    logActivity(supabase, project.id, "payment",
+      `Payment recorded on ${invoice.number}: ${moneyExact(amount)} (${payMethod})`);
+
+    // Fully covered → the stored lifecycle catches up automatically.
+    const newPaid = paid + amount;
+    if (newPaid >= num(form.amount)) {
+      await supabase
+        .from("invoice")
+        .update({ status: "paid", paid_at: payDate })
+        .eq("id", invoice.id);
+    } else if (form.status === "draft") {
+      await supabase.from("invoice").update({ status: "sent" }).eq("id", invoice.id);
+    }
+
+    const { data: fresh } = await supabase
+      .from("payment")
+      .select("*")
+      .eq("invoice_id", invoice.id)
+      .order("paid_on");
+    await refreshPdf(invoice.id, fresh ?? []);
+
+    setPayAmount("");
+    setBusy(false);
+    onSaved();
+  }
+
+  async function removePayment(payId: string, amount: number) {
+    if (!invoice) return;
+    await supabase.from("payment").delete().eq("id", payId);
+    logActivity(supabase, project.id, "payment",
+      `Payment removed from ${invoice.number}: ${moneyExact(amount)}`);
     onSaved();
   }
 
   async function remove() {
     if (!invoice) return;
     await supabase.from("invoice").delete().eq("id", invoice.id);
+    await supabase.storage.from("documents").remove([`${project.id}/invoices/${invoice.id}.pdf`]);
+    await supabase.from("document").delete().eq("storage_path", `${project.id}/invoices/${invoice.id}.pdf`);
+    logActivity(supabase, project.id, "invoice", `Invoice ${invoice.number} deleted`);
     onSaved();
+  }
+
+  async function download() {
+    if (!invoice) return;
+    const { data } = await supabase.storage
+      .from("documents")
+      .createSignedUrl(`${project.id}/invoices/${invoice.id}.pdf`, 600);
+    if (data?.signedUrl) window.open(data.signedUrl, "_blank", "noopener");
   }
 
   return (
     <Modal
       title={invoice ? `Invoice ${invoice.number}` : "New invoice"}
       onClose={onClose}
+      wide
       footer={
         <>
           {invoice ? (
@@ -1075,9 +1360,14 @@ function InvoiceModal({
               Delete
             </button>
           ) : null}
+          {invoice ? (
+            <button onClick={download} className="btn-ghost">
+              PDF
+            </button>
+          ) : null}
           <button onClick={onClose} className="btn-ghost">Cancel</button>
           <button onClick={save} disabled={saving} className="btn-brand">
-            {saving ? "Saving…" : "Save"}
+            {saving ? "Saving…" : "Save & update PDF"}
           </button>
         </>
       }
@@ -1103,7 +1393,7 @@ function InvoiceModal({
             placeholder="Design · Demo complete · Final…"
           />
         </Field>
-        <Field label="Status">
+        <Field label="Lifecycle">
           <select
             value={form.status}
             onChange={(e) => set("status", e.target.value as Invoice["status"])}
@@ -1120,10 +1410,80 @@ function InvoiceModal({
         <Field label="Due">
           <input type="date" value={form.due_at} onChange={(e) => set("due_at", e.target.value)} className="input" />
         </Field>
-        <Field label="Paid">
-          <input type="date" value={form.paid_at} onChange={(e) => set("paid_at", e.target.value)} className="input" />
-        </Field>
       </div>
+
+      {invoice ? (
+        <div className="mt-5 border-t border-ink-200 pt-4">
+          <div className="mb-2 flex items-baseline justify-between">
+            <h3 className="text-sm font-semibold text-ink-900">Payments</h3>
+            <p className="nums text-sm">
+              <span className="text-ink-500">Balance </span>
+              <span className={`font-bold ${balance <= 0 ? "text-emerald-700" : "text-ink-900"}`}>
+                {moneyExact(Math.max(0, balance))}
+              </span>
+            </p>
+          </div>
+
+          {payments.length ? (
+            <ul className="mb-3 divide-y divide-ink-100 rounded-md border border-ink-200">
+              {payments.map((pm) => (
+                <li key={pm.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                  <span>
+                    <span className="nums font-semibold">{moneyExact(pm.amount)}</span>
+                    <span className="muted"> · {pm.method} · {shortDate(pm.paid_on)}</span>
+                  </span>
+                  <button
+                    onClick={() => removePayment(pm.id, num(pm.amount))}
+                    className="text-ink-300 hover:text-red-600"
+                    aria-label="Remove payment"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted mb-3 text-xs">Nothing received yet.</p>
+          )}
+
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="w-28">
+              <label className="label">Amount</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={payAmount}
+                onChange={(e) => setPayAmount(e.target.value)}
+                className="input"
+                placeholder="0.00"
+              />
+            </div>
+            <div>
+              <label className="label">How</label>
+              <select
+                value={payMethod}
+                onChange={(e) => setPayMethod(e.target.value as Payment["method"])}
+                className="input w-auto"
+              >
+                <option value="check">Check</option>
+                <option value="zelle">Zelle</option>
+                <option value="cash">Cash</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">When</label>
+              <input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} className="input w-auto" />
+            </div>
+            <button onClick={recordPayment} disabled={busy || !payAmount} className="btn-primary">
+              {busy ? "Recording…" : "Record payment"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <p className="muted mt-4 text-xs">Save the invoice first, then record payments against it.</p>
+      )}
     </Modal>
   );
 }
@@ -1151,6 +1511,8 @@ function ExpenseModal({
     const row = { project_id: projectId, label: label.trim(), amount: num(amount), spent_at: spentAt || null };
     if (expense) await supabase.from("expense").update(row).eq("id", expense.id);
     else await supabase.from("expense").insert(row);
+    logActivity(supabase, projectId, "expense",
+      `Expense ${expense ? "edited" : "added"}: ${row.label} — ${money(row.amount)}`);
     onSaved();
   }
 
@@ -1283,6 +1645,8 @@ function COModal({
     };
     if (co) await supabase.from("change_order").update(row).eq("id", co.id);
     else await supabase.from("change_order").insert(row);
+    logActivity(supabase, projectId, "co",
+      `Change order ${co ? "updated" : "added"}: ${row.description} — +${money(row.amount)} (${row.status})`);
     onSaved();
   }
 
@@ -1364,6 +1728,7 @@ function DocumentsTab({
         tag,
         storage_path: path,
       });
+      logActivity(supabase, project.id, "doc", `Uploaded ${file.name} (${tag})`);
       note("Uploaded");
       await reload();
     }
@@ -1448,27 +1813,27 @@ function DocumentsTab({
 }
 
 /* ---------------------------------------------------------------------------
- * Activity — the job's story, written automatically from everything already
- * recorded. Nobody has to maintain it; it exists for handoffs and disputes,
- * not for daily driving. Notes are the only thing typed here on purpose.
+ * Activity — the job's story, written by the app as things happen: creates,
+ * edits, payments, phase moves, vendor answers, crew updates, WhatsApp traffic.
+ * Notes are the only thing typed here on purpose.
  * ------------------------------------------------------------------------- */
+const ACT_TONE: Record<string, string> = {
+  payment: "text-emerald-700",
+  price: "text-emerald-700",
+  crew: "text-ink-900",
+  wa_in: "text-ink-900",
+  wa_out: "text-sky-700",
+  phase: "text-brand-700",
+  rating: "text-brand-700",
+};
+
 function ActivityTab({
   project,
-  events,
-  invoices,
-  expenses,
-  cos,
-  docs,
-  prices,
+  acts,
   reload,
 }: {
   project: Project;
-  events: Event[];
-  invoices: Invoice[];
-  expenses: Expense[];
-  cos: CO[];
-  docs: Doc[];
-  prices: PriceReq[];
+  acts: Act[];
   reload: () => Promise<void>;
 }) {
   const supabase = createClient();
@@ -1476,59 +1841,14 @@ function ActivityTab({
 
   async function addNote() {
     if (!text.trim()) return;
-    await supabase.from("document").insert({
+    await supabase.from("activity").insert({
       project_id: project.id,
-      name: text.trim().slice(0, 80),
-      tag: "other",
-      note: text.trim(),
-      source: "note",
+      kind: "note",
+      message: `Note: ${text.trim().slice(0, 480)}`,
     });
     setText("");
     await reload();
   }
-
-  type Act = { at: string; text: string; tone?: string };
-  const acts: Act[] = [
-    { at: project.created_at, text: "Job created" },
-    ...events.map((e) => ({
-      at: e.created_at,
-      text: `Scheduled: ${e.label} — ${shortDate(e.date)}${e.done ? " ✓ done" : ""}`,
-    })),
-    ...prices.flatMap((r) => {
-      const who = r.partner?.name ?? "vendor";
-      const out: Act[] = [
-        { at: r.created_at, text: `Asked ${who} for a price${r.scope ? ` (${r.scope})` : ""}` },
-      ];
-      if (r.answered_at && r.amount != null) {
-        out.push({
-          at: r.answered_at,
-          text: `${who} answered: ${money(r.amount)}`,
-          tone: "text-emerald-700",
-        });
-      }
-      return out;
-    }),
-    ...invoices.map((i) => ({
-      at: i.created_at,
-      text: `Invoice ${i.number} — ${money(i.amount)} (${i.status})`,
-    })),
-    ...expenses.map((e) => ({
-      at: e.created_at,
-      text: `Expense: ${e.label} — ${money(e.amount)}`,
-    })),
-    ...cos.map((c) => ({
-      at: c.created_at,
-      text: `Change order: ${c.description} — +${money(c.amount)} (${c.status})`,
-      tone: c.status === "pending" ? "text-brand-700" : undefined,
-    })),
-    ...docs.map((d) =>
-      d.source === "crew"
-        ? { at: d.created_at, text: `Crew: “${d.note ?? d.name}”`, tone: "text-ink-900" }
-        : d.source === "note"
-          ? { at: d.created_at, text: `Note: ${d.note ?? d.name}` }
-          : { at: d.created_at, text: `Uploaded ${d.name} (${d.tag})` },
-    ),
-  ].sort((a, b) => b.at.localeCompare(a.at));
 
   return (
     <section className="card">
@@ -1546,14 +1866,87 @@ function ActivityTab({
           Add
         </button>
       </div>
-      <ul className="divide-y divide-ink-100">
-        {acts.map((a, i) => (
-          <li key={i} className="flex items-baseline gap-3 px-5 py-2">
-            <span className="nums shrink-0 text-xs text-ink-400">{dateTime(a.at)}</span>
-            <span className={`text-sm ${a.tone ?? "text-ink-700"}`}>{a.text}</span>
-          </li>
-        ))}
-      </ul>
+      {acts.length === 0 ? (
+        <Empty title="Nothing yet" hint="Everything that happens to this job gets written here as it happens." />
+      ) : (
+        <ul className="divide-y divide-ink-100">
+          {acts.map((a) => (
+            <li key={a.id} className="flex items-baseline gap-3 px-5 py-2">
+              <span className="nums shrink-0 text-xs text-ink-400">{dateTime(a.created_at)}</span>
+              <span className={`text-sm ${ACT_TONE[a.kind] ?? "text-ink-700"}`}>{a.message}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
+  );
+}
+
+/**
+ * Two seconds of honesty when a job completes. This is what makes the crew
+ * leaderboard real long before the WhatsApp summaries can supplement it.
+ */
+function RatingModal({
+  project,
+  crewName,
+  onClose,
+  onSaved,
+}: {
+  project: Project;
+  crewName: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const supabase = createClient();
+  const [score, setScore] = useState<number | null>(null);
+  const [note, setNote] = useState("");
+
+  async function save() {
+    if (!score) return;
+    await supabase
+      .from("project")
+      .update({ crew_rating: score, crew_rating_note: note.trim() || null })
+      .eq("id", project.id);
+    const face = score === 3 ? "👍" : score === 2 ? "😐" : "👎";
+    logActivity(supabase, project.id, "rating",
+      `Crew rated ${face}${note.trim() ? ` — “${note.trim().slice(0, 200)}”` : ""}`);
+    onSaved();
+  }
+
+  return (
+    <Modal
+      title={`How did ${crewName} do?`}
+      onClose={onClose}
+      footer={
+        <>
+          <button onClick={onClose} className="btn-ghost">Skip</button>
+          <button onClick={save} disabled={!score} className="btn-brand">Save</button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            [3, "👍", "Great"],
+            [2, "😐", "Fine"],
+            [1, "👎", "Problems"],
+          ].map(([v, face, label]) => (
+            <button
+              key={v}
+              onClick={() => setScore(v as number)}
+              className={`rounded-lg border px-3 py-4 text-center transition-colors ${
+                score === v ? "border-brand-500 bg-brand-50" : "border-ink-200 hover:bg-ink-50"
+              }`}
+            >
+              <span className="block text-2xl">{face}</span>
+              <span className="mt-1 block text-xs font-semibold text-ink-700">{label}</span>
+            </button>
+          ))}
+        </div>
+        <Field label="Anything worth remembering?" hint="This lands in the job's activity and the crew's history.">
+          <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} className="input" placeholder="Left the site clean · two callbacks about the countertop seam…" />
+        </Field>
+      </div>
+    </Modal>
   );
 }

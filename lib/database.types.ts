@@ -14,6 +14,44 @@ export type Database = {
   }
   public: {
     Tables: {
+      activity: {
+        Row: {
+          actor: string | null
+          created_at: string
+          detail: Json | null
+          id: number
+          kind: string
+          message: string
+          project_id: string
+        }
+        Insert: {
+          actor?: string | null
+          created_at?: string
+          detail?: Json | null
+          id?: number
+          kind: string
+          message: string
+          project_id: string
+        }
+        Update: {
+          actor?: string | null
+          created_at?: string
+          detail?: Json | null
+          id?: number
+          kind?: string
+          message?: string
+          project_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "activity_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "project"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       change_order: {
         Row: {
           amount: number
@@ -287,28 +325,43 @@ export type Database = {
       }
       org_setting: {
         Row: {
+          address: string | null
           business_name: string
           default_markup_pct: number
           default_net_days: number
+          email: string | null
           id: boolean
+          payment_instructions: string | null
+          phone: string | null
           prefix: string
           updated_at: string
+          wa_verify_token: string | null
         }
         Insert: {
+          address?: string | null
           business_name?: string
           default_markup_pct?: number
           default_net_days?: number
+          email?: string | null
           id?: boolean
+          payment_instructions?: string | null
+          phone?: string | null
           prefix?: string
           updated_at?: string
+          wa_verify_token?: string | null
         }
         Update: {
+          address?: string | null
           business_name?: string
           default_markup_pct?: number
           default_net_days?: number
+          email?: string | null
           id?: boolean
+          payment_instructions?: string | null
+          phone?: string | null
           prefix?: string
           updated_at?: string
+          wa_verify_token?: string | null
         }
         Relationships: []
       }
@@ -344,6 +397,54 @@ export type Database = {
           phone?: string | null
         }
         Relationships: []
+      }
+      payment: {
+        Row: {
+          amount: number
+          created_at: string
+          id: string
+          invoice_id: string
+          method: Database["public"]["Enums"]["pay_method"]
+          note: string | null
+          paid_on: string
+          project_id: string
+        }
+        Insert: {
+          amount: number
+          created_at?: string
+          id?: string
+          invoice_id: string
+          method?: Database["public"]["Enums"]["pay_method"]
+          note?: string | null
+          paid_on?: string
+          project_id: string
+        }
+        Update: {
+          amount?: number
+          created_at?: string
+          id?: string
+          invoice_id?: string
+          method?: Database["public"]["Enums"]["pay_method"]
+          note?: string | null
+          paid_on?: string
+          project_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "payment_invoice_id_fkey"
+            columns: ["invoice_id"]
+            isOneToOne: false
+            referencedRelation: "invoice"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "payment_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "project"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       price_request: {
         Row: {
@@ -416,13 +517,17 @@ export type Database = {
           cost: number | null
           created_at: string
           crew_id: string | null
+          crew_rating: number | null
+          crew_rating_note: string | null
           id: string
           notes: string | null
           phase: Database["public"]["Enums"]["phase"]
           price: number | null
           updated_at: string
           upload_token: string | null
+          wa_crew_group_id: string | null
           wa_crew_link: string | null
+          wa_sales_group_id: string | null
           wa_sales_link: string | null
         }
         Insert: {
@@ -435,13 +540,17 @@ export type Database = {
           cost?: number | null
           created_at?: string
           crew_id?: string | null
+          crew_rating?: number | null
+          crew_rating_note?: string | null
           id?: string
           notes?: string | null
           phase?: Database["public"]["Enums"]["phase"]
           price?: number | null
           updated_at?: string
           upload_token?: string | null
+          wa_crew_group_id?: string | null
           wa_crew_link?: string | null
+          wa_sales_group_id?: string | null
           wa_sales_link?: string | null
         }
         Update: {
@@ -454,13 +563,17 @@ export type Database = {
           cost?: number | null
           created_at?: string
           crew_id?: string | null
+          crew_rating?: number | null
+          crew_rating_note?: string | null
           id?: string
           notes?: string | null
           phase?: Database["public"]["Enums"]["phase"]
           price?: number | null
           updated_at?: string
           upload_token?: string | null
+          wa_crew_group_id?: string | null
           wa_crew_link?: string | null
+          wa_sales_group_id?: string | null
           wa_sales_link?: string | null
         }
         Relationships: [
@@ -511,6 +624,50 @@ export type Database = {
         }
         Relationships: []
       }
+      wa_message: {
+        Row: {
+          body: string
+          created_at: string
+          direction: string
+          from_name: string | null
+          from_phone: string | null
+          group_external_id: string | null
+          id: string
+          project_id: string | null
+          wamid: string | null
+        }
+        Insert: {
+          body: string
+          created_at?: string
+          direction?: string
+          from_name?: string | null
+          from_phone?: string | null
+          group_external_id?: string | null
+          id?: string
+          project_id?: string | null
+          wamid?: string | null
+        }
+        Update: {
+          body?: string
+          created_at?: string
+          direction?: string
+          from_name?: string | null
+          from_phone?: string | null
+          group_external_id?: string | null
+          id?: string
+          project_id?: string | null
+          wamid?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "wa_message_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "project"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
@@ -532,11 +689,24 @@ export type Database = {
         Args: { p_note: string; p_tag?: string; p_token: string }
         Returns: boolean
       }
+      url_token: { Args: never; Returns: string }
+      wa_ingest: {
+        Args: {
+          p_body: string
+          p_from_name: string
+          p_from_phone: string
+          p_group: string
+          p_secret: string
+          p_wamid: string
+        }
+        Returns: boolean
+      }
     }
     Enums: {
       co_status: "pending" | "approved" | "declined"
       doc_tag: "design" | "permit" | "photo" | "contract" | "invoice" | "other"
       invoice_status: "draft" | "sent" | "paid"
+      pay_method: "check" | "zelle" | "cash" | "other"
       phase:
         | "new"
         | "design"
@@ -660,6 +830,7 @@ export const Constants = {
       co_status: ["pending", "approved", "declined"],
       doc_tag: ["design", "permit", "photo", "contract", "invoice", "other"],
       invoice_status: ["draft", "sent", "paid"],
+      pay_method: ["check", "zelle", "cash", "other"],
       phase: [
         "new",
         "design",

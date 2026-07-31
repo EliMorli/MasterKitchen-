@@ -1,5 +1,6 @@
 import {
   LayoutDashboard,
+  Gauge,
   CalendarDays,
   Hammer,
   Wallet,
@@ -21,6 +22,7 @@ export const NAV_GROUPS: { heading: string; items: NavItem[] }[] = [
     heading: "Today",
     items: [
       { href: "/", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/pulse", label: "Pulse", icon: Gauge },
       { href: "/calendar", label: "Calendar", icon: CalendarDays },
     ],
   },

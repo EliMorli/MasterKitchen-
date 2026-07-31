@@ -151,8 +151,33 @@ try {
   await page.click("text=/MK-.*-01/");
   await page.locator('.fixed input.input').nth(1).fill("16000");
   await page.click('.fixed button:has-text("Save")');
-  await page.waitForTimeout(700);
+  await page.waitForTimeout(1500);
   check("invoice edited", await see(page, "$16,000"));
+
+  // Record a partial payment, then the rest — status derives itself.
+  await page.click("text=/MK-.*-01/");
+  await page.locator('.fixed input[placeholder="0.00"]').fill("6000");
+  await page.click('.fixed button:has-text("Record payment")');
+  await page.waitForTimeout(1500);
+  check("partial payment recorded", await see(page, "partial"));
+  await page.click("text=/MK-.*-01/");
+  await page.locator('.fixed input[placeholder="0.00"]').fill("10000");
+  await page.click('.fixed button:has-text("Record payment")');
+  await page.waitForTimeout(1500);
+  check("invoice fully paid", await see(page, "paid"));
+
+  // The PDF landed in Documents automatically.
+  await page.click('button:has-text("Documents")');
+  await page.waitForTimeout(1000);
+  check("invoice PDF filed", (await page.locator("text=/MK-.*-01.pdf/").count()) > 0);
+
+  // And the story wrote itself.
+  await page.click('button:has-text("Activity")');
+  await page.waitForTimeout(1000);
+  check("activity has the payment", await see(page, "Payment recorded"));
+  check("activity has the phase move", await see(page, "Moved to design"));
+  await page.click('button:has-text("Money")');
+  await page.waitForTimeout(600);
 
   // Expense
   await page.click('button:has-text("Add expense")');
@@ -199,6 +224,11 @@ try {
   await page.goto(`${BASE}/documents`, { waitUntil: "networkidle" });
   await page.fill('input[placeholder*="Search"]', "demo");
   check("documents search works", await see(page, "demo is done"));
+
+  // Pulse — the founder's glance
+  await page.goto(`${BASE}/pulse`, { waitUntil: "networkidle" });
+  check("pulse renders", await see(page, "Waiting to be paid"));
+  check("pulse client table", await see(page, "Ridgeline GC"));
 
   // Dashboard + calendar render
   await page.goto(`${BASE}/`, { waitUntil: "networkidle" });

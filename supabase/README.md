@@ -13,6 +13,7 @@ progression. `migrations/` holds the repo copies of everything applied since:
 | 20260731031527 | `v2_reset_drop_everything` |
 | 20260731031617 | `v2_schema` |
 | 20260731034605 | `url_safe_tokens` |
+| 20260731052010 | `payments_activity_whatsapp_pulse` |
 
 The heart of it is one enum:
 
@@ -24,6 +25,15 @@ phase: new → design → pricing → approved → in_progress → complete → 
 and editable: `event` (calendar), `invoice`, `expense`, `change_order`,
 `document`, `price_request`. Directory: `client_company`, `contact`, `partner`.
 Plus `user_account` and `org_setting`.
+
+The fourth migration adds the money-and-story layer: `payment` (invoice
+status derives from payments, never set by hand), `activity` (each job's
+auto-written log — the portal RPCs and `wa_ingest` write to it too), and
+`wa_message` (raw WhatsApp Cloud API traffic, matched to a job by group id).
+`project` gains `crew_rating` (1–3) and the per-job WhatsApp group ids;
+`org_setting` gains the business identity printed on invoice PDFs and
+`wa_verify_token`, which doubles as the webhook's shared secret for
+`wa_ingest` — still no service-role key anywhere.
 
 ## Access
 

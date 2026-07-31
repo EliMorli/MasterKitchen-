@@ -70,6 +70,14 @@ export default function PartnersPage() {
   );
 }
 
+type CrewJob = {
+  id: string;
+  address: string;
+  phase: string;
+  crew_rating: number | null;
+  crew_rating_note: string | null;
+};
+
 function PartnerModal({
   partner,
   onClose,
@@ -80,6 +88,17 @@ function PartnerModal({
   onSaved: () => void;
 }) {
   const supabase = createClient();
+  const [history, setHistory] = useState<CrewJob[]>([]);
+  useEffect(() => {
+    if (!partner) return;
+    supabase
+      .from("project")
+      .select("id, address, phase, crew_rating, crew_rating_note")
+      .eq("crew_id", partner.id)
+      .order("created_at", { ascending: false })
+      .then(({ data }) => setHistory((data as CrewJob[]) ?? []));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [partner?.id]);
   const [name, setName] = useState(partner?.name ?? "");
   const [kind, setKind] = useState(partner?.kind ?? "crew");
   const [phone, setPhone] = useState(partner?.phone ?? "");
@@ -151,6 +170,39 @@ function PartnerModal({
         <Field label="Notes">
           <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} className="input" />
         </Field>
+
+        {partner && history.length ? (
+          <div className="border-t border-ink-200 pt-4">
+            <div className="mb-2 flex items-baseline justify-between">
+              <h3 className="text-sm font-semibold text-ink-900">Job history</h3>
+              <p className="muted nums text-xs">
+                {history.length} job{history.length === 1 ? "" : "s"}
+                {(() => {
+                  const r = history.filter((h) => h.crew_rating);
+                  if (!r.length) return "";
+                  const avg = r.reduce((a, h) => a + (h.crew_rating ?? 0), 0) / r.length;
+                  return ` · rating ${avg >= 2.5 ? "👍" : avg >= 1.5 ? "😐" : "👎"} ${avg.toFixed(1)}`;
+                })()}
+              </p>
+            </div>
+            <ul className="max-h-48 divide-y divide-ink-100 overflow-y-auto rounded-md border border-ink-200">
+              {history.map((h) => (
+                <li key={h.id} className="px-3 py-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium">{h.address}</span>
+                    <span className="muted text-xs capitalize">
+                      {h.phase.replace("_", " ")}
+                      {h.crew_rating ? ` · ${h.crew_rating === 3 ? "👍" : h.crew_rating === 2 ? "😐" : "👎"}` : ""}
+                    </span>
+                  </div>
+                  {h.crew_rating_note ? (
+                    <p className="muted mt-0.5 text-xs">“{h.crew_rating_note}”</p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </div>
     </Modal>
   );
