@@ -420,11 +420,26 @@ function OverviewTab({
     if (then) window.open(then, "_blank", "noopener");
   }
 
+  /** A message's final text — with a 30-day link to the invoice PDF when it has one. */
+  async function msgText(m: { text: string; pdfPath?: string }) {
+    if (!m.pdfPath) return m.text;
+    const { data } = await supabase.storage
+      .from("documents")
+      .createSignedUrl(m.pdfPath, 60 * 60 * 24 * 30);
+    return data?.signedUrl ? `${m.text}\n${data.signedUrl}` : m.text;
+  }
+
   const nextEvent = events.find((e) => !e.done);
   const lastInvoice = invoices[invoices.length - 1];
 
   // Pre-written messages, composed from what the job knows.
-  const msgs: { label: string; text: string; to: string | null; aud: "sales" | "crew" }[] = [
+  const msgs: {
+    label: string;
+    text: string;
+    to: string | null;
+    aud: "sales" | "crew";
+    pdfPath?: string;
+  }[] = [
     nextEvent
       ? {
           label: "Schedule update → sales group",
@@ -461,9 +476,16 @@ function OverviewTab({
           }.`,
           to: project.wa_sales_link,
           aud: "sales" as const,
+          pdfPath: `${project.id}/invoices/${lastInvoice.id}.pdf`,
         }
       : null,
-  ].filter(Boolean) as { label: string; text: string; to: string | null; aud: "sales" | "crew" }[];
+  ].filter(Boolean) as {
+    label: string;
+    text: string;
+    to: string | null;
+    aud: "sales" | "crew";
+    pdfPath?: string;
+  }[];
 
   return (
     <div className="grid gap-5 lg:grid-cols-2">
@@ -732,7 +754,7 @@ function OverviewTab({
                   {waOn && (m.aud === "sales" ? project.wa_sales_group_id : project.wa_crew_group_id) ? (
                     <button
                       onClick={async () => {
-                        const r = await waSendToGroup(project.id, m.aud, m.text);
+                        const r = await waSendToGroup(project.id, m.aud, await msgText(m));
                         note(r.ok ? "Sent to the group ✓" : `Send failed: ${r.error}`);
                         if (r.ok) reload();
                       }}
@@ -741,7 +763,7 @@ function OverviewTab({
                       Send to group
                     </button>
                   ) : null}
-                  <button onClick={() => copy(m.text, m.to)} className="btn-primary btn-sm">
+                  <button onClick={async () => copy(await msgText(m), m.to)} className="btn-primary btn-sm">
                     <Copy size={13} /> Copy {m.to ? "& open group" : ""}
                   </button>
                   {rep?.phone ? (
@@ -1240,6 +1262,7 @@ function InvoiceModal({
   const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   const paid = payments.reduce((s, p) => s + num(p.amount), 0);
   const balance = num(form.amount) - paid;
@@ -1398,6 +1421,19 @@ function InvoiceModal({
     if (data?.signedUrl) window.open(data.signedUrl, "_blank", "noopener");
   }
 
+  /** A 30-day link straight to the PDF — paste it in the group, it opens the invoice. */
+  async function copyLink() {
+    if (!invoice) return;
+    const { data } = await supabase.storage
+      .from("documents")
+      .createSignedUrl(`${project.id}/invoices/${invoice.id}.pdf`, 60 * 60 * 24 * 30);
+    if (data?.signedUrl) {
+      await navigator.clipboard.writeText(data.signedUrl);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    }
+  }
+
   return (
     <Modal
       title={invoice ? `Invoice ${invoice.number}` : "New invoice"}
@@ -1413,6 +1449,11 @@ function InvoiceModal({
           {invoice ? (
             <button onClick={download} className="btn-ghost">
               PDF
+            </button>
+          ) : null}
+          {invoice ? (
+            <button onClick={copyLink} className="btn-ghost">
+              {linkCopied ? "Copied ✓" : "Copy link"}
             </button>
           ) : null}
           <button onClick={onClose} className="btn-ghost">Cancel</button>
