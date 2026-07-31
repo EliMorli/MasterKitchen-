@@ -457,6 +457,7 @@ export type Database = {
           amount: number | null
           answered_at: string | null
           created_at: string
+          doc_ids: string[]
           id: string
           lead_days: number | null
           notes: string | null
@@ -471,6 +472,7 @@ export type Database = {
           amount?: number | null
           answered_at?: string | null
           created_at?: string
+          doc_ids?: string[]
           id?: string
           lead_days?: number | null
           notes?: string | null
@@ -485,6 +487,7 @@ export type Database = {
           amount?: number | null
           answered_at?: string | null
           created_at?: string
+          doc_ids?: string[]
           id?: string
           lead_days?: number | null
           notes?: string | null

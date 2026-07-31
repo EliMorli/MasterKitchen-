@@ -32,20 +32,23 @@ const TABS = ["Overview", "Money", "Change orders", "Documents", "Activity"] as 
 type Tab = (typeof TABS)[number];
 
 /**
- * Mint fresh 30-day signed URLs for this job's design files and store them on
- * the document rows, so the vendor's price link can show the design without
- * any service key. Called whenever a price link is created or copied.
+ * Mint fresh 30-day signed URLs for the files a price link carries and store
+ * them on the document rows, so the vendor's page can show them without any
+ * service key. Called whenever a price link is created or copied. With no ids
+ * given, falls back to the job's design-tagged files.
  */
 async function refreshPortalDocs(
   supabase: ReturnType<typeof createClient>,
   projectId: string,
+  docIds?: string[],
 ) {
-  const { data: designs } = await supabase
+  let q = supabase
     .from("document")
     .select("id, storage_path")
     .eq("project_id", projectId)
-    .eq("tag", "design")
     .not("storage_path", "is", null);
+  q = docIds?.length ? q.in("id", docIds) : q.eq("tag", "design");
+  const { data: designs } = await q;
   if (!designs?.length) return;
 
   const THIRTY_DAYS = 60 * 60 * 24 * 30;
@@ -269,6 +272,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             partners={partners}
             prices={prices}
             invoices={invoices}
+            docs={docs}
             reload={reload}
             note={note}
             onUseCost={(amount) => patch({ cost: amount })}
@@ -391,6 +395,7 @@ function OverviewTab({
   partners,
   prices,
   invoices,
+  docs,
   reload,
   note,
   onUseCost,
@@ -406,6 +411,7 @@ function OverviewTab({
   partners: Partner[];
   prices: PriceReq[];
   invoices: Invoice[];
+  docs: Doc[];
   reload: () => Promise<void>;
   note: (t: string) => void;
   onUseCost: (amount: number) => void;
@@ -682,7 +688,7 @@ function OverviewTab({
                     ) : (
                       <button
                         onClick={async () => {
-                          await refreshPortalDocs(supabase, project.id);
+                          await refreshPortalDocs(supabase, project.id, pr.doc_ids);
                           copy(`${window.location.origin}/bid/${encodeURIComponent(pr.token)}`);
                         }}
                         className="btn-ghost btn-sm"
@@ -812,6 +818,7 @@ function OverviewTab({
         <AskPricesModal
           projectId={project.id}
           partners={partners}
+          docs={docs.filter((d) => d.storage_path)}
           already={new Set(prices.map((p) => p.partner_id))}
           onClose={() => setAsking(false)}
           onSaved={() => {
@@ -904,12 +911,14 @@ function EventModal({
 function AskPricesModal({
   projectId,
   partners,
+  docs,
   already,
   onClose,
   onSaved,
 }: {
   projectId: string;
   partners: Partner[];
+  docs: Doc[];
   already: Set<string>;
   onClose: () => void;
   onSaved: () => void;
@@ -918,15 +927,19 @@ function AskPricesModal({
   const [trade, setTrade] = useState("full job");
   const [custom, setCustom] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [pickedDocs, setPickedDocs] = useState<Set<string>>(
+    () => new Set(docs.filter((d) => d.tag === "design").map((d) => d.id)),
+  );
   const scope = trade === "other" ? custom.trim() || "other" : trade;
 
   async function send() {
     if (picked.size === 0) return;
+    const doc_ids = [...pickedDocs];
     await supabase.from("price_request").insert(
-      [...picked].map((partner_id) => ({ project_id: projectId, partner_id, scope })),
+      [...picked].map((partner_id) => ({ project_id: projectId, partner_id, scope, doc_ids })),
     );
     logActivity(supabase, projectId, "price", `Asked ${picked.size} vendor${picked.size === 1 ? "" : "s"} for a price (${scope})`);
-    await refreshPortalDocs(supabase, projectId);
+    if (doc_ids.length) await refreshPortalDocs(supabase, projectId, doc_ids);
     onSaved();
   }
 
@@ -989,6 +1002,31 @@ function AskPricesModal({
               ))}
           </div>
         </Field>
+        {docs.length ? (
+          <Field label="Attach documents" hint="They open these right from their link — the design especially.">
+            <div className="space-y-1.5">
+              {docs.map((d) => (
+                <label
+                  key={d.id}
+                  className="flex items-center gap-2 rounded-md border border-ink-200 px-3 py-2 text-sm"
+                >
+                  <input
+                    type="checkbox"
+                    checked={pickedDocs.has(d.id)}
+                    onChange={(e) => {
+                      const next = new Set(pickedDocs);
+                      if (e.target.checked) next.add(d.id);
+                      else next.delete(d.id);
+                      setPickedDocs(next);
+                    }}
+                  />
+                  <span className="truncate">{d.name}</span>
+                  <span className="muted ml-auto shrink-0 text-xs">{d.tag}</span>
+                </label>
+              ))}
+            </div>
+          </Field>
+        ) : null}
       </div>
     </Modal>
   );

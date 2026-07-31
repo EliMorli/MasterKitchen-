@@ -15,6 +15,7 @@ progression. `migrations/` holds the repo copies of everything applied since:
 | 20260731034605 | `url_safe_tokens` |
 | 20260731052010 | `payments_activity_whatsapp_pulse` |
 | 20260731063857 | `storage_update_policy_and_portal_docs` |
+| 20260731234321 | `price_request_doc_attachments` |
 
 The heart of it is one enum:
 

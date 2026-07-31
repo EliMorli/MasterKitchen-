@@ -128,7 +128,11 @@ try {
   // Vendor price: pick the trade, ask, open link, submit
   await page.click('button:has-text("Ask for prices")');
   await page.locator(".fixed select").first().selectOption("cabinets");
-  await page.locator('.fixed input[type="checkbox"]').first().check();
+  await page.locator('.fixed label:has-text("Crew A") input[type="checkbox"]').check();
+  check(
+    "design pre-attached",
+    await page.locator('.fixed label:has-text("design.pdf") input[type="checkbox"]').isChecked(),
+  );
   await page.click('.fixed button:has-text("Create")');
   await page.waitForTimeout(1200);
   check("price request created", await see(page, "not opened"));
