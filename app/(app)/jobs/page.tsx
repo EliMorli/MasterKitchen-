@@ -6,6 +6,7 @@ import { Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Topbar, Modal, Field, Badge } from "@/components/ui";
 import { PHASES, type Phase } from "@/lib/labels";
+import { nextStep } from "@/lib/next-step";
 import { money } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
@@ -15,6 +16,7 @@ type Project = Database["public"]["Tables"]["project"]["Row"] & {
 };
 type Company = { id: string; name: string };
 type Rep = { id: string; name: string; client_company_id: string };
+type Child = { project_id: string; [k: string]: unknown };
 
 /**
  * The Jobs board. One column per phase; drag a card to move the job forward —
@@ -33,6 +35,12 @@ export default function JobsPage() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<Phase | null>(null);
 
+  const [children, setChildren] = useState<{
+    events: Child[];
+    invoices: Child[];
+    reqs: Child[];
+  }>({ events: [], invoices: [], reqs: [] });
+
   useEffect(() => {
     Promise.all([
       supabase
@@ -42,10 +50,18 @@ export default function JobsPage() {
         .order("created_at", { ascending: false }),
       supabase.from("client_company").select("id, name").order("name"),
       supabase.from("contact").select("id, name, client_company_id").order("name"),
-    ]).then(([p, c, r]) => {
+      supabase.from("event").select("project_id, date, done, label"),
+      supabase.from("invoice").select("project_id, status, amount, due_at, issued_at"),
+      supabase.from("price_request").select("project_id, status, created_at"),
+    ]).then(([p, c, r, ev, inv, rq]) => {
       setProjects((p.data as Project[]) ?? []);
       setCompanies(c.data ?? []);
       setReps(r.data ?? []);
+      setChildren({
+        events: (ev.data as Child[]) ?? [],
+        invoices: (inv.data as Child[]) ?? [],
+        reqs: (rq.data as Child[]) ?? [],
+      });
       setLoading(false);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -135,6 +151,7 @@ export default function JobsPage() {
                         {p.client_company?.name ?? "No client"}
                         {p.contact?.name ? ` · ${p.contact.name}` : ""}
                       </p>
+                      <CardStep p={p} children_={children} />
                       <div className="mt-2 flex items-center justify-between">
                         <span className="nums text-xs text-ink-500">{p.code}</span>
                         {p.price != null ? (
@@ -162,6 +179,33 @@ export default function JobsPage() {
         />
       ) : null}
     </>
+  );
+}
+
+/** The one line that makes the board actionable: whose move is it? */
+function CardStep({
+  p,
+  children_,
+}: {
+  p: Project;
+  children_: { events: Child[]; invoices: Child[]; reqs: Child[] };
+}) {
+  const step = nextStep(
+    p,
+    children_.events.filter((e) => e.project_id === p.id) as never,
+    children_.invoices.filter((i) => i.project_id === p.id) as never,
+    children_.reqs.filter((r) => r.project_id === p.id) as never,
+  );
+  if (step.kind === "done") return null;
+  return (
+    <p
+      className={`mt-1 truncate text-xs font-medium ${
+        step.urgent ? "text-red-600" : step.kind === "ours" ? "text-brand-700" : "text-ink-500"
+      }`}
+    >
+      {step.urgent ? "⚠ " : ""}
+      {step.label}
+    </p>
   );
 }
 

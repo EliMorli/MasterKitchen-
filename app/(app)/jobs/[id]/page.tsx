@@ -13,7 +13,8 @@ import {
   PHASES,
   type Phase,
 } from "@/lib/labels";
-import { money, num, shortDate, timeOfDay } from "@/lib/format";
+import { dateTime, money, num, shortDate, timeOfDay } from "@/lib/format";
+import { nextStep } from "@/lib/next-step";
 import type { Database } from "@/lib/database.types";
 
 type DB = Database["public"]["Tables"];
@@ -28,7 +29,7 @@ type Company = { id: string; name: string };
 type Rep = { id: string; name: string; client_company_id: string; phone: string | null };
 type Partner = { id: string; name: string; kind: string };
 
-const TABS = ["Overview", "Money", "Change orders", "Documents"] as const;
+const TABS = ["Overview", "Money", "Change orders", "Documents", "Activity"] as const;
 type Tab = (typeof TABS)[number];
 
 /**
@@ -137,6 +138,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const approvedCOs = cos.filter((c) => c.status === "approved").reduce((s, c) => s + num(c.amount), 0);
   const expenseTotal = expenses.reduce((s, e) => s + num(e.amount), 0);
   const profit = num(project?.price) + approvedCOs - num(project?.cost) - expenseTotal;
+  const step = project ? nextStep(project, events, invoices, prices) : null;
 
   if (!project) return <p className="muted p-6">Loading…</p>;
 
@@ -153,6 +155,16 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             {project.city ? ` · ${project.city}` : ""}
             {rep ? ` · ${rep.name}` : ""}
           </p>
+          {step && step.kind !== "done" ? (
+            <p
+              className={`mt-1 text-sm font-semibold ${
+                step.urgent ? "text-red-600" : step.kind === "ours" ? "text-brand-700" : "text-ink-500"
+              }`}
+            >
+              {step.urgent ? "⚠ " : ""}Next: {step.label}
+              {step.days ? ` · ${step.days}d` : ""}
+            </p>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
           {flash ? <span className="text-sm font-medium text-emerald-700">{flash}</span> : null}
@@ -224,6 +236,18 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         ) : null}
         {tab === "Documents" ? (
           <DocumentsTab project={project} docs={docs} reload={reload} note={note} />
+        ) : null}
+        {tab === "Activity" ? (
+          <ActivityTab
+            project={project}
+            events={events}
+            invoices={invoices}
+            expenses={expenses}
+            cos={cos}
+            docs={docs}
+            prices={prices}
+            reload={reload}
+          />
         ) : null}
       </div>
     </div>
@@ -1390,11 +1414,11 @@ function DocumentsTab({
         </div>
       </header>
 
-      {docs.length === 0 ? (
+      {docs.filter((d) => d.source !== "note").length === 0 ? (
         <Empty title="Nothing here yet" hint="The design is the thing you scroll WhatsApp for — put it here instead." />
       ) : (
         <ul className="divide-y divide-ink-100">
-          {docs.map((d) => (
+          {docs.filter((d) => d.source !== "note").map((d) => (
             <li key={d.id} className="flex items-center gap-3 px-5 py-2.5">
               <Badge tone={d.source === "crew" ? "bg-brand-100 text-brand-700" : "bg-ink-100 text-ink-700"}>
                 {d.source === "crew" ? "crew" : d.tag}
@@ -1419,6 +1443,117 @@ function DocumentsTab({
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+ * Activity — the job's story, written automatically from everything already
+ * recorded. Nobody has to maintain it; it exists for handoffs and disputes,
+ * not for daily driving. Notes are the only thing typed here on purpose.
+ * ------------------------------------------------------------------------- */
+function ActivityTab({
+  project,
+  events,
+  invoices,
+  expenses,
+  cos,
+  docs,
+  prices,
+  reload,
+}: {
+  project: Project;
+  events: Event[];
+  invoices: Invoice[];
+  expenses: Expense[];
+  cos: CO[];
+  docs: Doc[];
+  prices: PriceReq[];
+  reload: () => Promise<void>;
+}) {
+  const supabase = createClient();
+  const [text, setText] = useState("");
+
+  async function addNote() {
+    if (!text.trim()) return;
+    await supabase.from("document").insert({
+      project_id: project.id,
+      name: text.trim().slice(0, 80),
+      tag: "other",
+      note: text.trim(),
+      source: "note",
+    });
+    setText("");
+    await reload();
+  }
+
+  type Act = { at: string; text: string; tone?: string };
+  const acts: Act[] = [
+    { at: project.created_at, text: "Job created" },
+    ...events.map((e) => ({
+      at: e.created_at,
+      text: `Scheduled: ${e.label} — ${shortDate(e.date)}${e.done ? " ✓ done" : ""}`,
+    })),
+    ...prices.flatMap((r) => {
+      const who = r.partner?.name ?? "vendor";
+      const out: Act[] = [
+        { at: r.created_at, text: `Asked ${who} for a price${r.scope ? ` (${r.scope})` : ""}` },
+      ];
+      if (r.answered_at && r.amount != null) {
+        out.push({
+          at: r.answered_at,
+          text: `${who} answered: ${money(r.amount)}`,
+          tone: "text-emerald-700",
+        });
+      }
+      return out;
+    }),
+    ...invoices.map((i) => ({
+      at: i.created_at,
+      text: `Invoice ${i.number} — ${money(i.amount)} (${i.status})`,
+    })),
+    ...expenses.map((e) => ({
+      at: e.created_at,
+      text: `Expense: ${e.label} — ${money(e.amount)}`,
+    })),
+    ...cos.map((c) => ({
+      at: c.created_at,
+      text: `Change order: ${c.description} — +${money(c.amount)} (${c.status})`,
+      tone: c.status === "pending" ? "text-brand-700" : undefined,
+    })),
+    ...docs.map((d) =>
+      d.source === "crew"
+        ? { at: d.created_at, text: `Crew: “${d.note ?? d.name}”`, tone: "text-ink-900" }
+        : d.source === "note"
+          ? { at: d.created_at, text: `Note: ${d.note ?? d.name}` }
+          : { at: d.created_at, text: `Uploaded ${d.name} (${d.tag})` },
+    ),
+  ].sort((a, b) => b.at.localeCompare(a.at));
+
+  return (
+    <section className="card">
+      <div className="flex gap-2 border-b border-ink-200 p-4">
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") addNote();
+          }}
+          className="input flex-1"
+          placeholder="Jot a note on this job…"
+        />
+        <button onClick={addNote} className="btn-ghost btn-sm shrink-0">
+          Add
+        </button>
+      </div>
+      <ul className="divide-y divide-ink-100">
+        {acts.map((a, i) => (
+          <li key={i} className="flex items-baseline gap-3 px-5 py-2">
+            <span className="nums shrink-0 text-xs text-ink-400">{dateTime(a.at)}</span>
+            <span className={`text-sm ${a.tone ?? "text-ink-700"}`}>{a.text}</span>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

@@ -1,70 +1,90 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { Badge, Empty, StatCard, Topbar } from "@/components/ui";
 import { PHASES, PHASE_TONE } from "@/lib/labels";
-import { money, num, relativeDay, shortDate, timeOfDay, toISODate } from "@/lib/format";
+import { nextStep, type NextStep } from "@/lib/next-step";
+import { money, num, relativeDay, timeOfDay, toISODate } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
+type Project = Database["public"]["Tables"]["project"]["Row"] & {
+  client_company: { name: string } | null;
+};
 type Event = Database["public"]["Tables"]["event"]["Row"] & {
   project: { id: string; address: string } | null;
   partner: { name: string } | null;
 };
-type Invoice = Database["public"]["Tables"]["invoice"]["Row"] & {
-  project: { id: string; address: string } | null;
-};
-type Project = Database["public"]["Tables"]["project"]["Row"];
+type Invoice = Database["public"]["Tables"]["invoice"]["Row"];
+type PriceReq = Database["public"]["Tables"]["price_request"]["Row"];
 
 /**
- * The 7am screen: what's happening, who owes us, and what needs a nudge.
- * Nothing here is a workflow — it's a look at the board before the calls start.
+ * The brain. Not a report — a screen you work from: every live job reduced to
+ * one line saying whose move it is. "Our move" is the to-do list; "Waiting" is
+ * the chase list. A data logger runs the whole day off this screen without an
+ * owner in the room.
  */
 export default function Dashboard() {
   const supabase = createClient();
-  const [events, setEvents] = useState<Event[]>([]);
-  const [unpaid, setUnpaid] = useState<Invoice[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [events, setEvents] = useState<Event[]>([]);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [priceReqs, setPriceReqs] = useState<PriceReq[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const today = toISODate(new Date());
-    const weekOut = toISODate(new Date(Date.now() + 7 * 86_400_000));
     Promise.all([
+      supabase
+        .from("project")
+        .select("*, client_company(name)")
+        .eq("archived", false)
+        .order("created_at", { ascending: false }),
       supabase
         .from("event")
         .select("*, project(id, address), partner(name)")
-        .gte("date", today)
-        .lte("date", weekOut)
-        .eq("done", false)
-        .order("date")
-        .order("time"),
-      supabase
-        .from("invoice")
-        .select("*, project(id, address)")
-        .eq("status", "sent")
-        .order("due_at"),
-      supabase.from("project").select("*").eq("archived", false),
-    ]).then(([ev, inv, pr]) => {
+        .order("date"),
+      supabase.from("invoice").select("*"),
+      supabase.from("price_request").select("*"),
+    ]).then(([pr, ev, inv, req]) => {
+      setProjects((pr.data as Project[]) ?? []);
       setEvents((ev.data as Event[]) ?? []);
-      setUnpaid((inv.data as Invoice[]) ?? []);
-      setProjects(pr.data ?? []);
+      setInvoices(inv.data ?? []);
+      setPriceReqs(req.data ?? []);
       setLoading(false);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const today = toISODate(new Date());
-  const todayEvents = events.filter((e) => e.date === today);
-  const upcoming = events.filter((e) => e.date !== today);
-  const outstanding = unpaid.reduce((s, i) => s + num(i.amount), 0);
-  const overdue = unpaid.filter((i) => i.due_at && i.due_at < today);
+  const weekOut = toISODate(new Date(Date.now() + 7 * 86_400_000));
 
-  // The nudges, computed on the spot — no engine, just two obvious checks.
-  const completeUnbilled = projects.filter(
-    (p) => p.phase === "complete" && !unpaid.some((i) => i.project_id === p.id),
-  );
+  // One derived line per live job: the whole business, sorted by whose move it is.
+  const lines = useMemo(() => {
+    return projects
+      .filter((p) => p.phase !== "paid")
+      .map((p) => ({
+        p,
+        step: nextStep(
+          p,
+          events.filter((e) => e.project_id === p.id),
+          invoices.filter((i) => i.project_id === p.id),
+          priceReqs.filter((r) => r.project_id === p.id),
+        ),
+      }));
+  }, [projects, events, invoices, priceReqs]);
+
+  const ourMove = lines.filter((l) => l.step.kind === "ours");
+  const waiting = lines
+    .filter((l) => l.step.kind === "waiting")
+    .sort((a, b) => (b.step.days ?? 0) - (a.step.days ?? 0));
+
+  const todayEvents = events.filter((e) => e.date === today && !e.done);
+  const upcoming = events.filter((e) => e.date > today && e.date <= weekOut && !e.done);
+  const outstanding = invoices
+    .filter((i) => i.status === "sent")
+    .reduce((s, i) => s + num(i.amount), 0);
+  const overdueCount = lines.filter((l) => l.step.urgent && l.step.label.includes("payment")).length;
 
   return (
     <>
@@ -78,77 +98,71 @@ export default function Dashboard() {
       />
 
       <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard
-          label="Active jobs"
-          value={String(projects.filter((p) => p.phase !== "paid").length)}
-        />
-        <StatCard label="On site today" value={String(todayEvents.length)} />
+        <StatCard label="Live jobs" value={String(lines.length)} />
+        <StatCard label="Our move" value={String(ourMove.length)} tone="text-brand-700" />
         <StatCard label="Waiting to be paid" value={money(outstanding)} />
         <StatCard
           label="Overdue"
-          value={String(overdue.length)}
-          tone={overdue.length ? "text-red-600" : "text-ink-900"}
-          hint={overdue.length ? "invoices past due" : undefined}
+          value={String(overdueCount)}
+          tone={overdueCount ? "text-red-600" : "text-ink-900"}
+          hint={overdueCount ? "chase these first" : undefined}
         />
       </div>
 
-      {completeUnbilled.length > 0 || overdue.length > 0 ? (
-        <div className="card mb-5">
-          <p className="border-b border-ink-200 px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-ink-500">
-            Worth a look
-          </p>
-          <ul className="divide-y divide-ink-100">
-            {completeUnbilled.map((p) => (
-              <li key={p.id} className="flex items-center justify-between px-5 py-2.5">
-                <p className="text-sm text-ink-800">
-                  <Link href={`/jobs/${p.id}`} className="font-semibold hover:text-brand-700">
-                    {p.address}
-                  </Link>{" "}
-                  is complete — no invoice out yet.
-                </p>
-                <Link href={`/jobs/${p.id}`} className="btn-primary btn-sm shrink-0">
-                  Open
-                </Link>
-              </li>
-            ))}
-            {overdue.map((i) => (
-              <li key={i.id} className="flex items-center justify-between px-5 py-2.5">
-                <p className="text-sm text-ink-800">
-                  Invoice <span className="nums font-semibold">{i.number}</span> at{" "}
-                  {i.project?.address} was due {shortDate(i.due_at)} — {money(i.amount)}.
-                </p>
-                {i.project ? (
-                  <Link href={`/jobs/${i.project.id}`} className="btn-ghost btn-sm shrink-0">
-                    Open
-                  </Link>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
       <div className="grid gap-5 lg:grid-cols-2">
         <section className="card">
-          <p className="border-b border-ink-200 px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-ink-500">
-            On site today
-          </p>
+          <header className="border-b border-ink-200 px-5 py-2.5">
+            <p className="text-xs font-bold uppercase tracking-wide text-brand-700">
+              Our move — do these
+            </p>
+          </header>
+          {ourMove.length === 0 ? (
+            <Empty
+              title={loading ? "Loading…" : "Nothing on us right now"}
+              hint="When a job needs an action from this office, it shows up here."
+            />
+          ) : (
+            <ul className="divide-y divide-ink-100">
+              {ourMove.map(({ p, step }) => (
+                <QueueRow key={p.id} p={p} step={step} />
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="card">
+          <header className="border-b border-ink-200 px-5 py-2.5">
+            <p className="text-xs font-bold uppercase tracking-wide text-ink-500">
+              Waiting on others — chase when it goes stale
+            </p>
+          </header>
+          {waiting.length === 0 ? (
+            <Empty title={loading ? "Loading…" : "Nobody's holding the ball"} />
+          ) : (
+            <ul className="divide-y divide-ink-100">
+              {waiting.map(({ p, step }) => (
+                <QueueRow key={p.id} p={p} step={step} />
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="card">
+          <header className="border-b border-ink-200 px-5 py-2.5">
+            <p className="text-xs font-bold uppercase tracking-wide text-ink-500">On site today</p>
+          </header>
           {todayEvents.length === 0 ? (
-            <Empty title={loading ? "Loading…" : "Nothing scheduled today"} />
+            <Empty title="Nothing scheduled today" />
           ) : (
             <EventList events={todayEvents} />
           )}
         </section>
 
         <section className="card">
-          <p className="border-b border-ink-200 px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-ink-500">
-            Next 7 days
-          </p>
-          {upcoming.length === 0 ? (
-            <Empty title={loading ? "Loading…" : "Nothing coming up"} />
-          ) : (
-            <EventList events={upcoming} showDay />
-          )}
+          <header className="border-b border-ink-200 px-5 py-2.5">
+            <p className="text-xs font-bold uppercase tracking-wide text-ink-500">Next 7 days</p>
+          </header>
+          {upcoming.length === 0 ? <Empty title="Nothing coming up" /> : <EventList events={upcoming} showDay />}
         </section>
       </div>
 
@@ -158,19 +172,45 @@ export default function Dashboard() {
         </p>
         <div className="scroll-x">
           <div className="flex min-w-max gap-4 px-5 py-3">
-            {PHASES.map((ph) => {
-              const count = projects.filter((p) => p.phase === ph.key).length;
-              return (
-                <Link key={ph.key} href="/jobs" className="flex items-center gap-1.5 text-sm">
-                  <Badge tone={PHASE_TONE[ph.key]}>{ph.label}</Badge>
-                  <span className="nums font-semibold text-ink-700">{count}</span>
-                </Link>
-              );
-            })}
+            {PHASES.map((ph) => (
+              <Link key={ph.key} href="/jobs" className="flex items-center gap-1.5 text-sm">
+                <Badge tone={PHASE_TONE[ph.key]}>{ph.label}</Badge>
+                <span className="nums font-semibold text-ink-700">
+                  {projects.filter((p) => p.phase === ph.key).length}
+                </span>
+              </Link>
+            ))}
           </div>
         </div>
       </section>
     </>
+  );
+}
+
+function QueueRow({ p, step }: { p: Project; step: NextStep }) {
+  return (
+    <li>
+      <Link
+        href={`/jobs/${p.id}`}
+        className="flex items-center justify-between gap-3 px-5 py-2.5 hover:bg-ink-50"
+      >
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-ink-900">{p.address}</p>
+          <p className="muted truncate text-xs">{p.client_company?.name ?? "—"}</p>
+        </div>
+        <div className="shrink-0 text-right">
+          <p
+            className={`text-sm font-medium ${
+              step.urgent ? "text-red-600" : step.kind === "ours" ? "text-brand-700" : "text-ink-600"
+            }`}
+          >
+            {step.urgent ? "⚠ " : ""}
+            {step.label}
+          </p>
+          {step.days ? <p className="muted text-xs">{step.days}d</p> : null}
+        </div>
+      </Link>
+    </li>
   );
 }
 
