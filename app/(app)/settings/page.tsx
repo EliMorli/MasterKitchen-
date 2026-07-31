@@ -1,161 +1,135 @@
-import { createClient } from "@/lib/supabase/server";
-import { Card, Field, PageHeader } from "@/components/ui";
-import { setUserRole, updateOrgSettings } from "@/lib/actions/directory";
-import { transportMode } from "@/lib/whatsapp/transport";
+"use client";
+
+import { useEffect, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
+import { Field, Topbar } from "@/components/ui";
 import { grossMarginPct, num, priceFromMarkup } from "@/lib/format";
+import type { Database } from "@/lib/database.types";
 
-export const dynamic = "force-dynamic";
+type Org = Database["public"]["Tables"]["org_setting"]["Row"];
+type User = Database["public"]["Tables"]["user_account"]["Row"];
 
-export default async function SettingsPage() {
-  const supabase = await createClient();
+export default function SettingsPage() {
+  const supabase = createClient();
+  const [org, setOrg] = useState<Org | null>(null);
+  const [users, setUsers] = useState<User[]>([]);
+  const [flash, setFlash] = useState("");
 
-  const [{ data: settings }, { data: users }, { data: me }] = await Promise.all([
-    supabase.from("org_setting").select("*").maybeSingle(),
-    supabase.from("user_account").select("*").order("created_at"),
-    supabase.auth.getUser(),
-  ]);
+  useEffect(() => {
+    supabase.from("org_setting").select("*").maybeSingle().then(({ data }) => setOrg(data));
+    supabase.from("user_account").select("*").order("created_at").then(({ data }) => setUsers(data ?? []));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const { data: myProfile } = await supabase
-    .from("user_account")
-    .select("role")
-    .eq("id", me.user?.id ?? "")
-    .maybeSingle();
+  async function save() {
+    if (!org) return;
+    await supabase
+      .from("org_setting")
+      .update({
+        business_name: org.business_name,
+        default_markup_pct: org.default_markup_pct,
+        default_net_days: org.default_net_days,
+        prefix: org.prefix,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", true);
+    setFlash("Saved");
+    setTimeout(() => setFlash(""), 1500);
+  }
 
-  const isOwner = myProfile?.role === "owner";
-  const markup = num(settings?.default_markup_pct) || 50;
-  const mode = transportMode();
-
-  // Worked example so the markup-vs-margin question can't be answered by accident.
-  const sample = 10_000;
-  const samplePrice = priceFromMarkup(sample, markup);
+  const markup = num(org?.default_markup_pct) || 50;
+  const sample = priceFromMarkup(10_000, markup);
 
   return (
     <>
-      <PageHeader title="Settings" />
+      <Topbar
+        title="Settings"
+        action={
+          <div className="flex items-center gap-2">
+            {flash ? <span className="text-sm font-medium text-emerald-700">{flash}</span> : null}
+            <button onClick={save} className="btn-brand">
+              Save
+            </button>
+          </div>
+        }
+      />
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Business">
-          <form action={updateOrgSettings} className="space-y-4 p-5">
-            <Field label="Legal name">
-              <input
-                name="legal_name"
-                defaultValue={settings?.legal_name ?? ""}
-                className="input"
-                placeholder="Master Kitchen LLC"
-              />
-            </Field>
-
-            <Field
-              label="Default markup on cost"
-              hint="Applied automatically to every quote, and editable on each one."
-            >
-              <input
-                name="default_markup_pct"
-                type="number"
-                step="0.1"
-                defaultValue={markup}
-                className="input"
-              />
-            </Field>
-
-            <div className="rounded-md bg-ink-50 p-3 text-sm">
-              <p className="font-semibold text-ink-800">
-                At {markup}%, a $10,000 cost becomes:
-              </p>
-              <div className="nums mt-1.5 flex justify-between">
-                <span className="text-ink-600">Price</span>
-                <span className="font-bold">${samplePrice.toLocaleString()}</span>
+      <div className="grid gap-5 lg:grid-cols-2">
+        <section className="card-pad space-y-4">
+          <h2 className="h2">Business</h2>
+          {org ? (
+            <>
+              <Field label="Business name">
+                <input
+                  value={org.business_name}
+                  onChange={(e) => setOrg({ ...org, business_name: e.target.value })}
+                  className="input"
+                />
+              </Field>
+              <div className="grid grid-cols-3 gap-3">
+                <Field label="Markup %">
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={org.default_markup_pct}
+                    onChange={(e) =>
+                      setOrg({ ...org, default_markup_pct: Number(e.target.value) })
+                    }
+                    className="input"
+                  />
+                </Field>
+                <Field label="Net days">
+                  <input
+                    type="number"
+                    value={org.default_net_days}
+                    onChange={(e) =>
+                      setOrg({ ...org, default_net_days: Number(e.target.value) })
+                    }
+                    className="input"
+                  />
+                </Field>
+                <Field label="Job prefix">
+                  <input
+                    value={org.prefix}
+                    onChange={(e) => setOrg({ ...org, prefix: e.target.value })}
+                    className="input"
+                  />
+                </Field>
               </div>
-              <div className="nums mt-0.5 flex justify-between">
-                <span className="text-ink-600">Gross margin</span>
-                <span className="font-bold">
-                  {grossMarginPct(sample, samplePrice).toFixed(1)}%
-                </span>
+              <div className="nums rounded-md bg-ink-50 p-3 text-sm">
+                <p className="font-semibold text-ink-800">At {markup}% markup:</p>
+                <p className="mt-1 text-ink-600">
+                  $10,000 cost → <span className="font-bold text-ink-900">${sample.toLocaleString()}</span> price
+                  ({grossMarginPct(10_000, sample).toFixed(1)}% gross margin)
+                </p>
+                <p className="mt-1 text-xs text-ink-500">
+                  If you think of &ldquo;50%&rdquo; as gross margin rather than markup, set this to 100.
+                </p>
               </div>
-              <p className="mt-2 text-xs text-ink-500">
-                If you meant &ldquo;50% gross margin&rdquo; rather than 50% markup, set
-                this to 100.
-              </p>
-            </div>
+            </>
+          ) : (
+            <p className="muted">Loading…</p>
+          )}
+        </section>
 
-            <Field label="Default payment terms (days)">
-              <input
-                name="default_net_days"
-                type="number"
-                defaultValue={settings?.default_net_days ?? 30}
-                className="input"
-              />
-            </Field>
-
-            <Field label="Number prefix">
-              <input
-                name="invoice_prefix"
-                defaultValue={settings?.invoice_prefix ?? "MK"}
-                className="input"
-              />
-            </Field>
-
-            <button className="btn-primary w-full">Save</button>
-          </form>
-        </Card>
-
-        <div className="space-y-6">
-          <Card title="People">
-            <ul className="divide-y divide-ink-100">
-              {(users ?? []).map((u) => (
-                <li key={u.id} className="flex items-center justify-between px-5 py-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">
-                      {u.full_name || u.email}
-                    </p>
-                    <p className="muted truncate text-xs">{u.email}</p>
-                  </div>
-                  {isOwner ? (
-                    <form action={setUserRole} className="flex items-center gap-1.5">
-                      <input type="hidden" name="id" value={u.id} />
-                      <select
-                        name="role"
-                        defaultValue={u.role}
-                        className="input w-auto py-1 text-xs"
-                      >
-                        <option value="owner">Owner</option>
-                        <option value="logger">Data logger</option>
-                      </select>
-                      <button className="btn-ghost btn-sm">Set</button>
-                    </form>
-                  ) : (
-                    <span className="text-xs capitalize text-ink-500">{u.role}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-            <p className="muted border-t border-ink-200 px-5 py-3 text-xs">
-              Data loggers can run the jobs but can&apos;t see bids, cost lines,
-              margin or payouts.
-            </p>
-          </Card>
-
-          <Card title="WhatsApp">
-            <div className="space-y-3 p-5 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="text-ink-600">Transport</span>
-                <span className="font-semibold">
-                  {mode === "cloud_api" ? "Cloud API" : "Manual (one tap)"}
-                </span>
-              </div>
-              <p className="muted text-xs">
-                Set <code>WHATSAPP_PHONE_NUMBER_ID</code> and{" "}
-                <code>WHATSAPP_ACCESS_TOKEN</code> to switch on automatic sending.
-                Group messaging also needs an Official Business Account, and the
-                number can&apos;t be on the WhatsApp Business app.
-              </p>
-              <p className="muted text-xs">
-                Nothing else changes when you switch: the same drafts, the same
-                Outbox review, the same audit trail.
-              </p>
-            </div>
-          </Card>
-        </div>
+        <section className="card">
+          <h2 className="h2 border-b border-ink-200 px-5 py-3">People</h2>
+          <ul className="divide-y divide-ink-100">
+            {users.map((u) => (
+              <li key={u.id} className="flex items-center justify-between px-5 py-3">
+                <div>
+                  <p className="text-sm font-medium">{u.full_name || u.email}</p>
+                  <p className="muted text-xs">{u.email}</p>
+                </div>
+                <span className="text-xs capitalize text-ink-500">{u.role}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="muted border-t border-ink-200 px-5 py-3 text-xs">
+            New sign-ups start as data loggers. Everyone sees everything — the whole
+            point is that the business runs without the owners.
+          </p>
+        </section>
       </div>
     </>
   );

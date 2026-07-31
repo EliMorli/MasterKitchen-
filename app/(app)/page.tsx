@@ -1,58 +1,74 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
-import { Badge, Card, EmptyState, PageHeader, Stat } from "@/components/ui";
-import { AttentionPanel } from "@/components/attention-panel";
-import { money, num, relativeDay, timeOfDay, toISODate } from "@/lib/format";
-import { TASK_TYPE, TASK_TYPE_TONE, TIME_SLOT } from "@/lib/labels";
+import { createClient } from "@/lib/supabase/client";
+import { Badge, Empty, StatCard, Topbar } from "@/components/ui";
+import { PHASES, PHASE_TONE } from "@/lib/labels";
+import { money, num, relativeDay, shortDate, timeOfDay, toISODate } from "@/lib/format";
+import type { Database } from "@/lib/database.types";
 
-export const dynamic = "force-dynamic";
+type Event = Database["public"]["Tables"]["event"]["Row"] & {
+  project: { id: string; address: string } | null;
+  partner: { name: string } | null;
+};
+type Invoice = Database["public"]["Tables"]["invoice"]["Row"] & {
+  project: { id: string; address: string } | null;
+};
+type Project = Database["public"]["Tables"]["project"]["Row"];
 
-export default async function Dashboard() {
-  const supabase = await createClient();
+/**
+ * The 7am screen: what's happening, who owes us, and what needs a nudge.
+ * Nothing here is a workflow — it's a look at the board before the calls start.
+ */
+export default function Dashboard() {
+  const supabase = createClient();
+  const [events, setEvents] = useState<Event[]>([]);
+  const [unpaid, setUnpaid] = useState<Invoice[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const today = toISODate(new Date());
+    const weekOut = toISODate(new Date(Date.now() + 7 * 86_400_000));
+    Promise.all([
+      supabase
+        .from("event")
+        .select("*, project(id, address), partner(name)")
+        .gte("date", today)
+        .lte("date", weekOut)
+        .eq("done", false)
+        .order("date")
+        .order("time"),
+      supabase
+        .from("invoice")
+        .select("*, project(id, address)")
+        .eq("status", "sent")
+        .order("due_at"),
+      supabase.from("project").select("*").eq("archived", false),
+    ]).then(([ev, inv, pr]) => {
+      setEvents((ev.data as Event[]) ?? []);
+      setUnpaid((inv.data as Invoice[]) ?? []);
+      setProjects(pr.data ?? []);
+      setLoading(false);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const today = toISODate(new Date());
-  const weekOut = toISODate(new Date(Date.now() + 7 * 86_400_000));
+  const todayEvents = events.filter((e) => e.date === today);
+  const upcoming = events.filter((e) => e.date !== today);
+  const outstanding = unpaid.reduce((s, i) => s + num(i.amount), 0);
+  const overdue = unpaid.filter((i) => i.due_at && i.due_at < today);
 
-  const [
-    { data: schedule },
-    { data: receivables },
-    { data: suggestions },
-    { count: activeJobs },
-    { count: unreviewed },
-  ] = await Promise.all([
-    supabase
-      .from("v_today_schedule")
-      .select("*")
-      .gte("scheduled_date", today)
-      .lte("scheduled_date", weekOut)
-      .order("scheduled_date")
-      .order("slot"),
-    supabase.from("v_open_receivables").select("*"),
-    supabase
-      .from("v_needs_attention")
-      .select("*")
-      .order("confidence", { ascending: false })
-      .limit(8),
-    supabase
-      .from("project")
-      .select("id", { count: "exact", head: true })
-      .in("status", ["won", "scheduled", "in_progress"]),
-    supabase
-      .from("upload")
-      .select("id", { count: "exact", head: true })
-      .is("reviewed_at", null),
-  ]);
-
-  const outstanding = (receivables ?? []).reduce((s, r) => s + num(r.balance), 0);
-  const overdue = (receivables ?? [])
-    .filter((r) => (r.days_overdue ?? 0) > 0)
-    .reduce((s, r) => s + num(r.balance), 0);
-
-  const todayTasks = (schedule ?? []).filter((t) => t.scheduled_date === today);
-  const upcoming = (schedule ?? []).filter((t) => t.scheduled_date !== today);
+  // The nudges, computed on the spot — no engine, just two obvious checks.
+  const completeUnbilled = projects.filter(
+    (p) => p.phase === "complete" && !unpaid.some((i) => i.project_id === p.id),
+  );
 
   return (
     <>
-      <PageHeader
+      <Topbar
         title="Today"
         subtitle={new Date().toLocaleDateString("en-US", {
           weekday: "long",
@@ -61,129 +77,126 @@ export default async function Dashboard() {
         })}
       />
 
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat label="Active jobs" value={String(activeJobs ?? 0)} href="/projects" />
-        <Stat label="Outstanding" value={money(outstanding)} href="/money" />
-        <Stat
+      <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard
+          label="Active jobs"
+          value={String(projects.filter((p) => p.phase !== "paid").length)}
+        />
+        <StatCard label="On site today" value={String(todayEvents.length)} />
+        <StatCard label="Waiting to be paid" value={money(outstanding)} />
+        <StatCard
           label="Overdue"
-          value={money(overdue)}
-          tone={overdue > 0 ? "text-red-600" : "text-ink-900"}
-          href="/money"
-        />
-        <Stat
-          label="Photos to review"
-          value={String(unreviewed ?? 0)}
-          hint="from crew job links"
+          value={String(overdue.length)}
+          tone={overdue.length ? "text-red-600" : "text-ink-900"}
+          hint={overdue.length ? "invoices past due" : undefined}
         />
       </div>
 
-      {/* Always rendered — the control that runs the checks lives here, so it
-          must be reachable before there is anything to show. */}
-      <div className="mb-6">
-        <AttentionPanel items={suggestions ?? []} />
-      </div>
+      {completeUnbilled.length > 0 || overdue.length > 0 ? (
+        <div className="card mb-5">
+          <p className="border-b border-ink-200 px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-ink-500">
+            Worth a look
+          </p>
+          <ul className="divide-y divide-ink-100">
+            {completeUnbilled.map((p) => (
+              <li key={p.id} className="flex items-center justify-between px-5 py-2.5">
+                <p className="text-sm text-ink-800">
+                  <Link href={`/jobs/${p.id}`} className="font-semibold hover:text-brand-700">
+                    {p.address}
+                  </Link>{" "}
+                  is complete — no invoice out yet.
+                </p>
+                <Link href={`/jobs/${p.id}`} className="btn-primary btn-sm shrink-0">
+                  Open
+                </Link>
+              </li>
+            ))}
+            {overdue.map((i) => (
+              <li key={i.id} className="flex items-center justify-between px-5 py-2.5">
+                <p className="text-sm text-ink-800">
+                  Invoice <span className="nums font-semibold">{i.number}</span> at{" "}
+                  {i.project?.address} was due {shortDate(i.due_at)} — {money(i.amount)}.
+                </p>
+                {i.project ? (
+                  <Link href={`/jobs/${i.project.id}`} className="btn-ghost btn-sm shrink-0">
+                    Open
+                  </Link>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="On site today">
-          {todayTasks.length === 0 ? (
-            <EmptyState
-              title="Nothing scheduled today"
-              hint="Tasks you schedule show up here with whether the rep and crew have been told."
-            />
+      <div className="grid gap-5 lg:grid-cols-2">
+        <section className="card">
+          <p className="border-b border-ink-200 px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-ink-500">
+            On site today
+          </p>
+          {todayEvents.length === 0 ? (
+            <Empty title={loading ? "Loading…" : "Nothing scheduled today"} />
           ) : (
-            <ul className="divide-y divide-ink-100">
-              {todayTasks.map((t) => (
-                <TaskRow key={t.task_id} task={t} />
-              ))}
-            </ul>
+            <EventList events={todayEvents} />
           )}
-        </Card>
+        </section>
 
-        <Card title="Next 7 days">
+        <section className="card">
+          <p className="border-b border-ink-200 px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-ink-500">
+            Next 7 days
+          </p>
           {upcoming.length === 0 ? (
-            <EmptyState
-              title="Nothing on the calendar yet"
-              hint="The horizon here is short by design — a day to a week out."
-            />
+            <Empty title={loading ? "Loading…" : "Nothing coming up"} />
           ) : (
-            <ul className="divide-y divide-ink-100">
-              {upcoming.slice(0, 10).map((t) => (
-                <TaskRow key={t.task_id} task={t} showDay />
-              ))}
-            </ul>
+            <EventList events={upcoming} showDay />
           )}
-        </Card>
+        </section>
       </div>
+
+      <section className="card mt-5">
+        <p className="border-b border-ink-200 px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-ink-500">
+          The board
+        </p>
+        <div className="scroll-x">
+          <div className="flex min-w-max gap-4 px-5 py-3">
+            {PHASES.map((ph) => {
+              const count = projects.filter((p) => p.phase === ph.key).length;
+              return (
+                <Link key={ph.key} href="/jobs" className="flex items-center gap-1.5 text-sm">
+                  <Badge tone={PHASE_TONE[ph.key]}>{ph.label}</Badge>
+                  <span className="nums font-semibold text-ink-700">{count}</span>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      </section>
     </>
   );
 }
 
-type Row = {
-  task_id: string | null;
-  project_id: string | null;
-  job_address: string | null;
-  client_name: string | null;
-  crew_name: string | null;
-  task_type: string | null;
-  slot: string | null;
-  start_time: string | null;
-  scheduled_date: string | null;
-  rep_notified: boolean | null;
-  crew_notified: boolean | null;
-};
-
-function TaskRow({ task, showDay }: { task: Row; showDay?: boolean }) {
-  const type = (task.task_type ?? "other") as keyof typeof TASK_TYPE;
-  const slot = (task.slot ?? "full_day") as keyof typeof TIME_SLOT;
-
+function EventList({ events, showDay }: { events: Event[]; showDay?: boolean }) {
   return (
-    <li className="px-5 py-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <Link
-            href={`/projects/${task.project_id}`}
-            className="block truncate text-sm font-semibold text-ink-900 hover:text-brand-700"
-          >
-            {task.job_address}
-          </Link>
-          <p className="muted truncate text-xs">
-            {task.client_name}
-            {task.crew_name ? ` · ${task.crew_name}` : " · no crew assigned"}
-          </p>
-        </div>
-        <div className="shrink-0 text-right">
-          <span
-            className={`badge border ${TASK_TYPE_TONE[type] ?? ""}`}
-          >
-            {TASK_TYPE[type] ?? type}
+    <ul className="divide-y divide-ink-100">
+      {events.slice(0, 10).map((e) => (
+        <li key={e.id} className="flex items-center justify-between px-5 py-2.5">
+          <div className="min-w-0">
+            <Link
+              href={`/jobs/${e.project?.id}`}
+              className="block truncate text-sm font-semibold text-ink-900 hover:text-brand-700"
+            >
+              {e.project?.address}
+            </Link>
+            <p className="muted text-xs">
+              {e.label}
+              {e.partner?.name ? ` · ${e.partner.name}` : ""}
+            </p>
+          </div>
+          <span className="nums shrink-0 text-xs text-ink-500">
+            {showDay ? `${relativeDay(e.date)} ` : ""}
+            {e.time ? timeOfDay(e.time) : ""}
           </span>
-          <p className="nums muted mt-1 text-xs">
-            {showDay ? `${relativeDay(task.scheduled_date)} · ` : ""}
-            {task.start_time ? timeOfDay(task.start_time) : TIME_SLOT[slot]}
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-2 flex gap-1.5">
-        <Badge
-          tone={
-            task.rep_notified
-              ? "bg-emerald-100 text-emerald-800"
-              : "bg-ink-100 text-ink-600"
-          }
-        >
-          {task.rep_notified ? "✓ rep told" : "rep not told"}
-        </Badge>
-        <Badge
-          tone={
-            task.crew_notified
-              ? "bg-emerald-100 text-emerald-800"
-              : "bg-ink-100 text-ink-600"
-          }
-        >
-          {task.crew_notified ? "✓ crew told" : "crew not told"}
-        </Badge>
-      </div>
-    </li>
+        </li>
+      ))}
+    </ul>
   );
 }

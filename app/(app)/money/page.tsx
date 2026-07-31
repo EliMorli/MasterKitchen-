@@ -1,201 +1,184 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
-import { Badge, Card, EmptyState, PageHeader, Stat } from "@/components/ui";
-import { markInvoicePaid, markPayoutPaid, sendInvoice } from "@/lib/actions/money";
-import { money, num, shortDate } from "@/lib/format";
+import { createClient } from "@/lib/supabase/client";
+import { Badge, Empty, StatCard, Table, Topbar } from "@/components/ui";
+import { INVOICE_TONE } from "@/lib/labels";
+import { money, num, shortDate, toISODate } from "@/lib/format";
+import type { Database } from "@/lib/database.types";
 
-export const dynamic = "force-dynamic";
-
-const BUCKET_TONE: Record<string, string> = {
-  current: "bg-ink-100 text-ink-600",
-  "no terms": "bg-ink-100 text-ink-600",
-  "1-30": "bg-brand-100 text-brand-700",
-  "31-60": "bg-orange-100 text-orange-800",
-  "61-90": "bg-red-100 text-red-800",
-  "90+": "bg-red-200 text-red-900",
+type Invoice = Database["public"]["Tables"]["invoice"]["Row"] & {
+  project: { id: string; address: string } | null;
 };
+type Expense = Database["public"]["Tables"]["expense"]["Row"] & {
+  project: { id: string; address: string } | null;
+};
+type Project = Database["public"]["Tables"]["project"]["Row"];
+type CO = { project_id: string; amount: number; status: string };
 
 /**
- * Receivables (docs/06). Today this is memory and a scroll — Q48 answered "how
- * do you track who owes you?" with "unpaid invoices."
+ * All the money in one place: what's owed to us, what we spent, and what each
+ * job actually made. Rows link to the job — that's where editing lives.
  */
-export default async function MoneyPage() {
-  const supabase = await createClient();
+export default function MoneyPage() {
+  const supabase = createClient();
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [cos, setCos] = useState<CO[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const [{ data: open }, { data: drafts }, { data: payouts }] = await Promise.all([
-    supabase
-      .from("v_open_receivables")
-      .select("*")
-      .order("days_overdue", { ascending: false, nullsFirst: false }),
-    supabase
-      .from("invoice")
-      .select("*, project(id, address_line1), client_company(name)")
-      .eq("status", "draft")
-      .order("created_at"),
-    supabase
-      .from("payout")
-      .select("*, partner(name), project(id, address_line1)")
-      .in("status", ["pending", "approved"])
-      .order("created_at"),
-  ]);
+  useEffect(() => {
+    Promise.all([
+      supabase.from("invoice").select("*, project(id, address)").order("created_at", { ascending: false }),
+      supabase.from("expense").select("*, project(id, address)").order("spent_at", { ascending: false }),
+      supabase.from("project").select("*").eq("archived", false),
+      supabase.from("change_order").select("project_id, amount, status"),
+    ]).then(([inv, ex, pr, co]) => {
+      setInvoices((inv.data as Invoice[]) ?? []);
+      setExpenses((ex.data as Expense[]) ?? []);
+      setProjects(pr.data ?? []);
+      setCos(co.data ?? []);
+      setLoading(false);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const outstanding = (open ?? []).reduce((s, r) => s + num(r.balance), 0);
-  const overdue = (open ?? [])
-    .filter((r) => (r.days_overdue ?? 0) > 0)
-    .reduce((s, r) => s + num(r.balance), 0);
-  const owed = (payouts ?? []).reduce((s, p) => s + num(p.amount), 0);
+  const today = toISODate(new Date());
+  const outstanding = invoices
+    .filter((i) => i.status === "sent")
+    .reduce((s, i) => s + num(i.amount), 0);
+  const overdue = invoices.filter((i) => i.status === "sent" && i.due_at && i.due_at < today);
+  const thisMonth = today.slice(0, 7);
+  const collected = invoices
+    .filter((i) => i.status === "paid" && i.paid_at?.startsWith(thisMonth))
+    .reduce((s, i) => s + num(i.amount), 0);
+  const spent = expenses
+    .filter((e) => e.spent_at?.startsWith(thisMonth))
+    .reduce((s, e) => s + num(e.amount), 0);
 
-  const byClient = new Map<string, number>();
-  for (const r of open ?? []) {
-    const name = r.client_name ?? "—";
-    byClient.set(name, (byClient.get(name) ?? 0) + num(r.balance));
-  }
+  // Profit per job: price + approved change orders − cost − expenses.
+  const profitRows = useMemo(() => {
+    return projects
+      .filter((p) => p.price != null || p.cost != null)
+      .map((p) => {
+        const extras = cos
+          .filter((c) => c.project_id === p.id && c.status === "approved")
+          .reduce((s, c) => s + num(c.amount), 0);
+        const exp = expenses
+          .filter((e) => e.project_id === p.id)
+          .reduce((s, e) => s + num(e.amount), 0);
+        const profit = num(p.price) + extras - num(p.cost) - exp;
+        return { p, extras, exp, profit };
+      })
+      .sort((a, b) => b.profit - a.profit);
+  }, [projects, cos, expenses]);
 
   return (
     <>
-      <PageHeader title="Money" subtitle="Who owes us, and who we owe." />
+      <Topbar title="Money" subtitle="Who owes us, what we spent, what each job made." />
 
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat label="Outstanding" value={money(outstanding)} />
-        <Stat
+      <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard label="Waiting to be paid" value={money(outstanding)} />
+        <StatCard
           label="Overdue"
-          value={money(overdue)}
-          tone={overdue > 0 ? "text-red-600" : "text-ink-900"}
+          value={String(overdue.length)}
+          tone={overdue.length ? "text-red-600" : "text-ink-900"}
+          hint={overdue.length ? "invoices past due" : undefined}
         />
-        <Stat label="Drafts waiting" value={String(drafts?.length ?? 0)} />
-        <Stat label="Owed to crews" value={money(owed)} />
+        <StatCard label="Collected this month" value={money(collected)} tone="text-emerald-700" />
+        <StatCard label="Spent this month" value={money(spent)} />
       </div>
 
       <div className="space-y-6">
-        {drafts?.length ? (
-          <Card title="Drafted, not sent">
-            <ul className="divide-y divide-ink-100">
-              {drafts.map((i) => (
-                <li key={i.id} className="flex items-center justify-between px-5 py-3">
-                  <div className="min-w-0">
-                    <p className="nums text-sm font-semibold">{i.number}</p>
-                    <p className="muted truncate text-xs">
-                      {(i.client_company as { name: string } | null)?.name} ·{" "}
-                      {(i.project as { address_line1: string } | null)?.address_line1}{" "}
-                      · {i.description}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-3">
-                    <span className="nums text-sm font-bold">{money(i.amount)}</span>
-                    <form action={sendInvoice}>
-                      <input type="hidden" name="id" value={i.id} />
-                      <button className="btn-primary btn-sm">Send</button>
-                    </form>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </Card>
-        ) : null}
-
-        <Card title="Unpaid invoices">
-          {!open?.length ? (
-            <EmptyState
-              title="Nothing outstanding"
-              hint="Everything sent has been paid."
-            />
-          ) : (
-            <div className="scroll-x">
-              <table className="w-full min-w-[720px]">
-                <thead className="border-b border-ink-200 bg-ink-50">
-                  <tr>
-                    <th className="th">Invoice</th>
-                    <th className="th">Client</th>
-                    <th className="th">Job</th>
-                    <th className="th text-right">Balance</th>
-                    <th className="th">Due</th>
-                    <th className="th">Age</th>
-                    <th className="th"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-ink-100">
-                  {open.map((r) => (
-                    <tr key={r.id}>
-                      <td className="td nums font-semibold">{r.number}</td>
-                      <td className="td">{r.client_name}</td>
-                      <td className="td text-ink-600">{r.job_address}</td>
-                      <td className="td nums text-right font-bold">
-                        {money(r.balance)}
-                      </td>
-                      <td className="td nums text-ink-500">{shortDate(r.due_at)}</td>
-                      <td className="td">
-                        <Badge tone={BUCKET_TONE[r.aging_bucket ?? ""] ?? ""}>
-                          {r.aging_bucket}
-                        </Badge>
-                      </td>
-                      <td className="td text-right">
-                        <form action={markInvoicePaid}>
-                          <input type="hidden" name="id" value={r.id ?? ""} />
-                          <button className="btn-ghost btn-sm">Mark paid</button>
-                        </form>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        <section>
+          <h2 className="h2 mb-2">Invoices</h2>
+          {invoices.length === 0 ? (
+            <div className="card">
+              <Empty title={loading ? "Loading…" : "No invoices yet"} hint="Invoices live on each job's Money tab." />
             </div>
-          )}
-        </Card>
-
-        {byClient.size > 0 ? (
-          <Card title="By client">
-            <ul className="divide-y divide-ink-100">
-              {[...byClient.entries()]
-                .sort((a, b) => b[1] - a[1])
-                .map(([name, total]) => (
-                  <li key={name} className="flex justify-between px-5 py-2.5">
-                    <span className="text-sm">{name}</span>
-                    <span className="nums text-sm font-semibold">{money(total)}</span>
-                  </li>
-                ))}
-            </ul>
-          </Card>
-        ) : null}
-
-        {payouts?.length ? (
-          <Card title="Owed to crews and vendors">
-            <ul className="divide-y divide-ink-100">
-              {payouts.map((p) => {
-                const project = p.project as {
-                  id: string;
-                  address_line1: string;
-                } | null;
-                return (
-                  <li
-                    key={p.id}
-                    className="flex items-center justify-between px-5 py-3"
+          ) : (
+            <Table head={["Number", "Job", "Description", "Amount", "Due", "Status"]}>
+              {invoices.map((i) => (
+                <tr key={i.id} className="hover:bg-ink-50">
+                  <td className="td nums font-semibold">
+                    <Link href={`/jobs/${i.project?.id}`} className="hover:text-brand-700">
+                      {i.number}
+                    </Link>
+                  </td>
+                  <td className="td">{i.project?.address ?? "—"}</td>
+                  <td className="td text-ink-600">{i.description ?? "—"}</td>
+                  <td className="td nums font-bold">{money(i.amount)}</td>
+                  <td
+                    className={`td nums ${
+                      i.status === "sent" && i.due_at && i.due_at < today
+                        ? "font-semibold text-red-600"
+                        : "text-ink-500"
+                    }`}
                   >
-                    <div>
-                      <p className="text-sm font-medium">
-                        {(p.partner as { name: string } | null)?.name}
-                      </p>
-                      <Link
-                        href={`/projects/${project?.id}`}
-                        className="muted text-xs hover:text-ink-800"
-                      >
-                        {project?.address_line1}
-                      </Link>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="nums text-sm font-semibold">
-                        {money(p.amount)}
-                      </span>
-                      <form action={markPayoutPaid}>
-                        <input type="hidden" name="id" value={p.id} />
-                        <button className="btn-ghost btn-sm">Mark paid</button>
-                      </form>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </Card>
-        ) : null}
+                    {shortDate(i.due_at)}
+                  </td>
+                  <td className="td">
+                    <Badge tone={INVOICE_TONE[i.status]}>{i.status}</Badge>
+                  </td>
+                </tr>
+              ))}
+            </Table>
+          )}
+        </section>
+
+        <section>
+          <h2 className="h2 mb-2">Profit per job</h2>
+          {profitRows.length === 0 ? (
+            <div className="card">
+              <Empty title="Nothing priced yet" hint="Set a price and a cost on a job and it shows up here." />
+            </div>
+          ) : (
+            <Table head={["Job", "Price", "Extras", "Cost", "Expenses", "Profit"]}>
+              {profitRows.map(({ p, extras, exp, profit }) => (
+                <tr key={p.id} className="hover:bg-ink-50">
+                  <td className="td font-semibold">
+                    <Link href={`/jobs/${p.id}`} className="hover:text-brand-700">
+                      {p.address}
+                    </Link>
+                  </td>
+                  <td className="td nums">{money(p.price)}</td>
+                  <td className="td nums text-ink-500">{extras ? `+${money(extras)}` : "—"}</td>
+                  <td className="td nums text-ink-500">{p.cost != null ? `−${money(p.cost)}` : "—"}</td>
+                  <td className="td nums text-ink-500">{exp ? `−${money(exp)}` : "—"}</td>
+                  <td className={`td nums font-bold ${profit >= 0 ? "text-emerald-700" : "text-red-600"}`}>
+                    {money(profit)}
+                  </td>
+                </tr>
+              ))}
+            </Table>
+          )}
+        </section>
+
+        <section>
+          <h2 className="h2 mb-2">Expenses</h2>
+          {expenses.length === 0 ? (
+            <div className="card">
+              <Empty title="No expenses logged" hint="Permits, dumpsters, materials — add them on the job's Money tab." />
+            </div>
+          ) : (
+            <Table head={["What", "Job", "Date", "Amount"]}>
+              {expenses.map((e) => (
+                <tr key={e.id} className="hover:bg-ink-50">
+                  <td className="td font-medium">{e.label}</td>
+                  <td className="td">
+                    <Link href={`/jobs/${e.project?.id}`} className="hover:text-brand-700">
+                      {e.project?.address ?? "—"}
+                    </Link>
+                  </td>
+                  <td className="td nums text-ink-500">{shortDate(e.spent_at)}</td>
+                  <td className="td nums font-semibold">{money(e.amount)}</td>
+                </tr>
+              ))}
+            </Table>
+          )}
+        </section>
       </div>
     </>
   );

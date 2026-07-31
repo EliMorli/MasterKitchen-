@@ -1,45 +1,35 @@
 import {
   LayoutDashboard,
-  Send,
   CalendarDays,
   Hammer,
-  ClipboardList,
   Wallet,
+  FolderOpen,
   Building2,
   Wrench,
   Settings,
 } from "lucide-react";
 
-export type NavItem = {
-  href: string;
-  label: string;
-  icon: typeof LayoutDashboard;
-  /** Which live counter, if any, shows on this item. */
-  badge?: "outbox" | "attention";
-};
+export type NavItem = { href: string; label: string; icon: typeof LayoutDashboard };
 
 /**
- * One definition, used by the desktop sidebar and the phone drawer, so the two
- * can never drift apart.
- *
- * Grouped rather than flat: the owners asked to keep Today / Work / Directory,
- * which reads as "what I'm doing now", "the jobs themselves", "reference".
+ * One definition for the desktop sidebar and the phone drawer, so the two can
+ * never drift apart. Grouped Today / Work / Directory — the project is the main
+ * course; everything else is around it.
  */
 export const NAV_GROUPS: { heading: string; items: NavItem[] }[] = [
   {
     heading: "Today",
     items: [
-      { href: "/", label: "Dashboard", icon: LayoutDashboard, badge: "attention" },
-      { href: "/outbox", label: "Outbox", icon: Send, badge: "outbox" },
-      { href: "/schedule", label: "Schedule", icon: CalendarDays },
+      { href: "/", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/calendar", label: "Calendar", icon: CalendarDays },
     ],
   },
   {
     heading: "Work",
     items: [
-      { href: "/projects", label: "Jobs", icon: Hammer },
-      { href: "/bids", label: "Portal", icon: ClipboardList },
+      { href: "/jobs", label: "Jobs", icon: Hammer },
       { href: "/money", label: "Money", icon: Wallet },
+      { href: "/documents", label: "Documents", icon: FolderOpen },
     ],
   },
   {

@@ -1,135 +1,239 @@
-import { createClient } from "@/lib/supabase/server";
-import { Card, EmptyState, Field, PageHeader } from "@/components/ui";
-import { createClientCompany, createContact } from "@/lib/actions/directory";
+"use client";
 
-export const dynamic = "force-dynamic";
+import { useCallback, useEffect, useState } from "react";
+import { Plus } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
+import { Empty, Field, Modal, Topbar } from "@/components/ui";
+import type { Database } from "@/lib/database.types";
 
-/**
- * Clients are companies; the sales rep is a person inside one. Invoices go to
- * the company, WhatsApp goes to the rep (docs/01).
- */
-export default async function ClientsPage() {
-  const supabase = await createClient();
+type Company = Database["public"]["Tables"]["client_company"]["Row"] & {
+  contact: { id: string; name: string; phone: string | null; email: string | null }[];
+};
+type Rep = Company["contact"][number];
 
-  const { data: companies } = await supabase
-    .from("client_company")
-    .select("*, contact(id, full_name, phone, email, title)")
-    .eq("is_active", true)
-    .order("name");
+/** The GC companies, with the sales reps who actually send the work. */
+export default function ClientsPage() {
+  const supabase = createClient();
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [modal, setModal] = useState<Company | "new" | null>(null);
+  const [repModal, setRepModal] = useState<{ companyId: string; rep: Rep | null } | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase
+      .from("client_company")
+      .select("*, contact(id, name, phone, email)")
+      .order("name");
+    setCompanies((data as Company[]) ?? []);
+    setLoading(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   return (
     <>
-      <PageHeader
+      <Topbar
         title="Clients"
-        subtitle="The GC companies you work for, and the reps inside them."
+        subtitle="The GCs you work for — and the rep inside each one."
+        action={
+          <button onClick={() => setModal("new")} className="btn-brand">
+            <Plus size={16} /> New client
+          </button>
+        }
       />
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="space-y-4 lg:col-span-2">
-          {!companies?.length ? (
-            <Card>
-              <EmptyState
-                title="No clients yet"
-                hint="Add the GC company first, then the sales rep you actually talk to."
-              />
-            </Card>
-          ) : (
-            companies.map((c) => {
-              const reps =
-                (c.contact as {
-                  id: string;
-                  full_name: string;
-                  phone: string | null;
-                  email: string | null;
-                  title: string | null;
-                }[]) ?? [];
-
-              return (
-                <Card key={c.id} title={c.name}>
-                  <div className="px-5 py-3">
-                    <p className="muted text-xs">
-                      {c.billing_email ?? "No billing email"}
-                      {c.default_net_days ? ` · net ${c.default_net_days}` : ""}
-                    </p>
-                  </div>
-
-                  {reps.length > 0 ? (
-                    <ul className="divide-y divide-ink-100 border-t border-ink-100">
-                      {reps.map((r) => (
-                        <li
-                          key={r.id}
-                          className="flex items-center justify-between px-5 py-2.5"
-                        >
-                          <div>
-                            <p className="text-sm font-medium">{r.full_name}</p>
-                            <p className="muted text-xs">
-                              {r.title ? `${r.title} · ` : ""}
-                              {r.phone ?? "no phone"}
-                            </p>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-
-                  <details className="border-t border-ink-200">
-                    <summary className="cursor-pointer px-5 py-2.5 text-sm font-medium text-ink-700">
-                      Add a rep
-                    </summary>
-                    <form action={createContact} className="grid gap-3 px-5 pb-5 sm:grid-cols-2">
-                      <input type="hidden" name="client_company_id" value={c.id} />
-                      <input
-                        name="full_name"
-                        required
-                        className="input"
-                        placeholder="Name"
-                      />
-                      <input
-                        name="phone"
-                        className="input"
-                        placeholder="WhatsApp number"
-                      />
-                      <input name="email" type="email" className="input" placeholder="Email" />
-                      <input name="title" className="input" placeholder="Title" />
-                      <div className="sm:col-span-2">
-                        <button className="btn-ghost btn-sm">Add rep</button>
-                      </div>
-                    </form>
-                  </details>
-                </Card>
-              );
-            })
-          )}
+      {companies.length === 0 ? (
+        <div className="card">
+          <Empty title={loading ? "Loading…" : "No clients yet"} />
         </div>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {companies.map((c) => (
+            <section key={c.id} className="card">
+              <header
+                onClick={() => setModal(c)}
+                className="flex cursor-pointer items-center justify-between border-b border-ink-200 px-5 py-3 hover:bg-ink-50"
+              >
+                <div>
+                  <h2 className="h2">{c.name}</h2>
+                  <p className="muted text-xs">
+                    {[c.phone, c.email].filter(Boolean).join(" · ") || "No contact info"}
+                  </p>
+                </div>
+                <span className="text-xs font-medium text-ink-400">Edit</span>
+              </header>
+              <ul className="divide-y divide-ink-100">
+                {c.contact.map((r) => (
+                  <li
+                    key={r.id}
+                    onClick={() => setRepModal({ companyId: c.id, rep: r })}
+                    className="flex cursor-pointer items-center justify-between px-5 py-2.5 hover:bg-ink-50"
+                  >
+                    <p className="text-sm font-medium text-ink-900">{r.name}</p>
+                    <p className="muted text-xs">{r.phone ?? ""}</p>
+                  </li>
+                ))}
+                <li className="px-5 py-2.5">
+                  <button
+                    onClick={() => setRepModal({ companyId: c.id, rep: null })}
+                    className="text-xs font-semibold text-brand-700 hover:text-brand-600"
+                  >
+                    + Add a rep
+                  </button>
+                </li>
+              </ul>
+            </section>
+          ))}
+        </div>
+      )}
 
-        <Card title="Add a client">
-          <form action={createClientCompany} className="space-y-3 p-5">
-            <Field label="Company name">
-              <input name="name" required className="input" placeholder="Ridgeline GC" />
-            </Field>
-            <Field label="Billing email">
-              <input
-                name="billing_email"
-                type="email"
-                className="input"
-                placeholder="ap@ridgeline.com"
-              />
-            </Field>
-            <Field label="Phone">
-              <input name="phone" className="input" />
-            </Field>
-            <Field label="Payment terms (days)">
-              <input
-                name="default_net_days"
-                type="number"
-                defaultValue={30}
-                className="input"
-              />
-            </Field>
-            <button className="btn-brand w-full">Add client</button>
-          </form>
-        </Card>
-      </div>
+      {modal ? (
+        <CompanyModal
+          company={modal === "new" ? null : modal}
+          onClose={() => setModal(null)}
+          onSaved={async () => {
+            setModal(null);
+            await load();
+          }}
+        />
+      ) : null}
+      {repModal ? (
+        <RepModal
+          companyId={repModal.companyId}
+          rep={repModal.rep}
+          onClose={() => setRepModal(null)}
+          onSaved={async () => {
+            setRepModal(null);
+            await load();
+          }}
+        />
+      ) : null}
     </>
+  );
+}
+
+function CompanyModal({
+  company,
+  onClose,
+  onSaved,
+}: {
+  company: Company | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const supabase = createClient();
+  const [name, setName] = useState(company?.name ?? "");
+  const [email, setEmail] = useState(company?.email ?? "");
+  const [phone, setPhone] = useState(company?.phone ?? "");
+  const [notes, setNotes] = useState(company?.notes ?? "");
+
+  async function save() {
+    if (!name.trim()) return;
+    const row = {
+      name: name.trim(),
+      email: email.trim() || null,
+      phone: phone.trim() || null,
+      notes: notes.trim() || null,
+    };
+    if (company) await supabase.from("client_company").update(row).eq("id", company.id);
+    else await supabase.from("client_company").insert(row);
+    onSaved();
+  }
+
+  return (
+    <Modal
+      title={company ? company.name : "New client"}
+      onClose={onClose}
+      footer={
+        <>
+          <button onClick={onClose} className="btn-ghost">Cancel</button>
+          <button onClick={save} className="btn-brand">Save</button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <Field label="Company name">
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} className="input" />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Email">
+            <input value={email} onChange={(e) => setEmail(e.target.value)} className="input" />
+          </Field>
+          <Field label="Phone">
+            <input value={phone} onChange={(e) => setPhone(e.target.value)} className="input" />
+          </Field>
+        </div>
+        <Field label="Notes">
+          <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} className="input" />
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
+function RepModal({
+  companyId,
+  rep,
+  onClose,
+  onSaved,
+}: {
+  companyId: string;
+  rep: Rep | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const supabase = createClient();
+  const [name, setName] = useState(rep?.name ?? "");
+  const [phone, setPhone] = useState(rep?.phone ?? "");
+  const [email, setEmail] = useState(rep?.email ?? "");
+
+  async function save() {
+    if (!name.trim()) return;
+    const row = {
+      client_company_id: companyId,
+      name: name.trim(),
+      phone: phone.trim() || null,
+      email: email.trim() || null,
+    };
+    if (rep) await supabase.from("contact").update(row).eq("id", rep.id);
+    else await supabase.from("contact").insert(row);
+    onSaved();
+  }
+
+  async function remove() {
+    if (!rep) return;
+    await supabase.from("contact").delete().eq("id", rep.id);
+    onSaved();
+  }
+
+  return (
+    <Modal
+      title={rep ? rep.name : "Add a rep"}
+      onClose={onClose}
+      footer={
+        <>
+          {rep ? (
+            <button onClick={remove} className="btn-ghost mr-auto text-red-600">Delete</button>
+          ) : null}
+          <button onClick={onClose} className="btn-ghost">Cancel</button>
+          <button onClick={save} className="btn-brand">Save</button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <Field label="Name">
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} className="input" />
+        </Field>
+        <Field label="WhatsApp number" hint="With country code — the send buttons use it.">
+          <input value={phone} onChange={(e) => setPhone(e.target.value)} className="input" placeholder="+1 555 123 0001" />
+        </Field>
+        <Field label="Email">
+          <input value={email} onChange={(e) => setEmail(e.target.value)} className="input" />
+        </Field>
+      </div>
+    </Modal>
   );
 }

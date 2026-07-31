@@ -1,8 +1,10 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { AUTH_COOKIE } from "@/lib/supabase/cookie";
 
-/** Paths that must stay reachable without an account. */
-const PUBLIC_PREFIXES = ["/login", "/bid/", "/j/", "/auth/"];
+/** Paths that must stay reachable without an account. The /supa rewrite serves
+ * the browser's own Supabase traffic, which carries its auth in headers. */
+const PUBLIC_PREFIXES = ["/login", "/bid/", "/u/", "/auth/", "/supa/"];
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -11,6 +13,7 @@ export async function middleware(request: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      cookieOptions: { name: AUTH_COOKIE },
       cookies: {
         getAll() {
           return request.cookies.getAll();

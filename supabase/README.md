@@ -1,47 +1,48 @@
 # supabase/
 
-The live project is **`masterkitchen`** — ref `oyyasackypbohstxqmnn`, region `us-east-1`.
+Live project: **`masterkitchen`** — ref `oyyasackypbohstxqmnn`, region `us-east-1`.
 
-## Applied migrations
+## v2
 
-| Version | Name |
+The v1 schema (29 tables modeling a workflow) was dropped in
+`v2_reset_drop_everything` and replaced with 12 tables modeling a simple
+progression. `migrations/` holds the repo copies of everything applied since:
+
+| Applied | Name |
 | --- | --- |
-| 20260730212413 | `core_types_people_projects_bidding_quoting` |
-| 20260730212449 | `scheduling_money_comms_agent_links_audit` |
-| 20260730212512 | `views_and_milestone_templates` |
-| 20260730212529 | `row_level_security_and_storage` |
-| 20260730212602 | `harden_function_grants_and_extension_schema` |
-| 20260730214437 | `tokenized_portal_rpcs` |
-| 20260730214617 | `portal_submit_bid_optional_args` |
+| 20260731031527 | `v2_reset_drop_everything` |
+| 20260731031617 | `v2_schema` |
+| 20260731034605 | `url_safe_tokens` |
 
-The first three together are [`db/schema.sql`](../db/schema.sql), which stays the
-annotated reference for the data model. The rest are in
-[`migrations/`](migrations/) — they are the parts that only exist because this is
-a real deployment: auth wiring, row level security, and the two public pages.
+The heart of it is one enum:
 
-## Access model
+```
+phase: new → design → pricing → approved → in_progress → complete → paid
+```
 
-Three tiers, and the middle one is the interesting one:
+`project.phase` drives the kanban board and the stage strip. Children are flat
+and editable: `event` (calendar), `invoice`, `expense`, `change_order`,
+`document`, `price_request`. Directory: `client_company`, `contact`, `partner`.
+Plus `user_account` and `org_setting`.
 
-**Owners** see everything. **Data loggers** can run the jobs but not the money —
-`bid`, `quote`, `quote_cost_line` and `payout` are owner-only at the row level,
-so a logger cannot read what a crew charges or what the margin is even by
-querying directly. The first account created becomes an owner; everyone after is
-a logger until promoted in Settings.
+## Access
 
-**Vendors and crews have no account at all**, by design — they will not log in
-(docs/09 #68). They reach a tokenized page, and the scoping lives in the database
-rather than the app: `portal_get_bid`, `portal_submit_bid`, `portal_get_job` and
-`portal_submit_upload` each resolve their token first and can only touch the one
-row it belongs to. These four are the only functions `anon` may execute.
+One team, one policy: any signed-in staff member can do anything. The `role`
+column (owner / logger) stays for later, but v2 doesn't split visibility — the
+point is that the data loggers run the whole business.
 
-That choice is worth keeping. The obvious alternative — giving the app a
-service-role key to serve those pages — means holding a secret that bypasses RLS
-entirely, and a leak exposes the whole database. Here there is no such secret:
-a leaked token exposes one job.
+Vendors and crews never log in. They reach two token-scoped pages served by
+four `portal_*` functions (the only things `anon` can execute), and the token
+check lives in the database — there is no service-role key in the app.
+Tokens are base64url (`url_token()`), because they live in URL paths.
 
-## Regenerating types
+## The /supa rewrite
 
-After any schema change, regenerate `lib/database.types.ts` — the app is typed
-against it end to end, and a stale file shows up as `never` types rather than a
-clear error.
+The browser talks to Supabase through a same-origin `/supa/*` rewrite (see
+`next.config.ts`), proxied by the Next server. One origin for everything, and
+the auth cookie name is pinned in `lib/supabase/cookie.ts` so the server and
+browser clients agree on it.
+
+## After schema changes
+
+Regenerate `lib/database.types.ts` — the app is typed against it end to end.

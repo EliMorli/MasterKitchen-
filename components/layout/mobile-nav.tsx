@@ -1,43 +1,29 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Menu, X } from "lucide-react";
 import { NavLinks, Wordmark } from "./nav-links";
 
-/**
- * Hamburger + slide-in drawer for phones. The desktop sidebar is hidden below
- * md, so without this there is no way to navigate on a phone at all.
- */
-export function MobileNav({
-  outboxCount,
-  attentionCount,
-}: {
-  outboxCount: number;
-  attentionCount: number;
-}) {
+/** Hamburger + slide-in drawer. The only navigation below md. */
+export function MobileNav() {
   const [open, setOpen] = useState(false);
-  const total = outboxCount + attentionCount;
 
-  // Lock body scroll and close on Escape while the drawer is open. Each link
-  // closes it on click, so no route-change effect is needed.
   useEffect(() => {
     if (!open) return;
-    const previous = document.body.style.overflow;
+    const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
     document.addEventListener("keydown", onKey);
     return () => {
-      document.body.style.overflow = previous;
+      document.body.style.overflow = prev;
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
 
-  // Portaled to <body> so the header's stacking context can't trap it.
-  // `open` is false during SSR, so this only ever runs client-side.
+  // Portaled to <body> so the blurred header can't trap the fixed overlay.
   const drawer =
     open && typeof document !== "undefined"
       ? createPortal(
@@ -59,22 +45,9 @@ export function MobileNav({
                   <X size={20} />
                 </button>
               </div>
-
               <div className="flex-1 overflow-y-auto">
-                <NavLinks
-                  outboxCount={outboxCount}
-                  attentionCount={attentionCount}
-                  onNavigate={() => setOpen(false)}
-                />
+                <NavLinks onNavigate={() => setOpen(false)} />
               </div>
-
-              <Link
-                href="/projects/new"
-                onClick={() => setOpen(false)}
-                className="btn-brand mt-3 w-full"
-              >
-                New job
-              </Link>
             </aside>
           </div>,
           document.body,
@@ -87,12 +60,9 @@ export function MobileNav({
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Open menu"
-        className="relative -ml-1 rounded-md p-2 text-ink-600 hover:bg-ink-100 md:hidden"
+        className="-ml-1 rounded-md p-2 text-ink-600 hover:bg-ink-100 md:hidden"
       >
         <Menu size={22} />
-        {total > 0 ? (
-          <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-brand-500" />
-        ) : null}
       </button>
       {drawer}
     </>
