@@ -141,19 +141,23 @@ export default function PulsePage() {
     };
   }, [projects, invoices, payments, cos, acts, thisMonth, lastMonth, now]);
 
-  // Per-GC health: volume trend + how fast they actually pay.
+  // Per-GC health: volume trend + how fast they actually pay. Rolling 30-day
+  // windows, not calendar months — on the 1st of a month a calendar compare
+  // would flag every client as quiet.
   const clients = useMemo(() => {
     const map = new Map<string, {
       name: string; total: number; now: number; prev: number; payDays: number[];
     }>();
+    const t = now.getTime();
     for (const p of projects) {
       const c = p.client_company;
       if (!c) continue;
       if (!map.has(c.id)) map.set(c.id, { name: c.name, total: 0, now: 0, prev: 0, payDays: [] });
       const row = map.get(c.id)!;
       row.total++;
-      if (p.created_at.startsWith(thisMonth)) row.now++;
-      if (p.created_at.startsWith(lastMonth)) row.prev++;
+      const age = (t - new Date(p.created_at).getTime()) / DAY;
+      if (age <= 30) row.now++;
+      else if (age <= 60) row.prev++;
     }
     for (const pay of payments) {
       const inv = invoices.find((i) => i.id === pay.invoice_id);
@@ -165,7 +169,7 @@ export default function PulsePage() {
       );
     }
     return [...map.values()].sort((a, b) => b.total - a.total);
-  }, [projects, payments, invoices, thisMonth, lastMonth]);
+  }, [projects, payments, invoices, now]);
 
   // Crew leaderboard: jobs done, average rating.
   const crews = useMemo(() => {
@@ -232,7 +236,7 @@ export default function PulsePage() {
           {clients.length === 0 ? (
             <div className="card"><Empty title={loading ? "Loading…" : "No clients yet"} /></div>
           ) : (
-            <Table head={["GC", "Jobs", "This mo", "Last mo", "Avg days to pay"]}>
+            <Table head={["GC", "Jobs", "Last 30d", "Prior 30d", "Avg days to pay"]}>
               {clients.map((c) => {
                 const quiet = c.prev > 0 && c.now === 0;
                 const avgPay = c.payDays.length

@@ -176,19 +176,19 @@ try {
   check("profit visible", await see(page, "Profit"));
 
   // Edit the invoice
-  await page.click("text=/MK-.*-01/");
+  await page.click("text=/MK-2026-\\d+-01/");
   await page.locator('.fixed input.input').nth(1).fill("16000");
   await page.click('.fixed button:has-text("Save")');
   await page.waitForTimeout(1500);
   check("invoice edited", await see(page, "$16,000"));
 
   // Record a partial payment, then the rest — status derives itself.
-  await page.click("text=/MK-.*-01/");
+  await page.click("text=/MK-2026-\\d+-01/");
   await page.locator('.fixed input[placeholder="0.00"]').fill("6000");
   await page.click('.fixed button:has-text("Record payment")');
   await page.waitForTimeout(1500);
   check("partial payment recorded", await see(page, "partial"));
-  await page.click("text=/MK-.*-01/");
+  await page.click("text=/MK-2026-\\d+-01/");
   await page.locator('.fixed input[placeholder="0.00"]').fill("10000");
   await page.click('.fixed button:has-text("Record payment")');
   await page.waitForTimeout(1500);
