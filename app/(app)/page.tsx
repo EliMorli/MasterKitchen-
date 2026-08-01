@@ -18,6 +18,7 @@ type Event = Database["public"]["Tables"]["event"]["Row"] & {
 };
 type Invoice = Database["public"]["Tables"]["invoice"]["Row"];
 type PriceReq = Database["public"]["Tables"]["price_request"]["Row"];
+type CO = { project_id: string; amount: number; status: string };
 
 /**
  * The brain. Not a report — a screen you work from: every live job reduced to
@@ -31,6 +32,7 @@ export default function Dashboard() {
   const [events, setEvents] = useState<Event[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [priceReqs, setPriceReqs] = useState<PriceReq[]>([]);
+  const [cos, setCos] = useState<CO[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -46,11 +48,13 @@ export default function Dashboard() {
         .order("date"),
       supabase.from("invoice").select("*"),
       supabase.from("price_request").select("*"),
-    ]).then(([pr, ev, inv, req]) => {
+      supabase.from("change_order").select("project_id, amount, status"),
+    ]).then(([pr, ev, inv, req, co]) => {
       setProjects((pr.data as Project[]) ?? []);
       setEvents((ev.data as Event[]) ?? []);
       setInvoices(inv.data ?? []);
       setPriceReqs(req.data ?? []);
+      setCos((co.data as CO[]) ?? []);
       setLoading(false);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -70,9 +74,10 @@ export default function Dashboard() {
           events.filter((e) => e.project_id === p.id),
           invoices.filter((i) => i.project_id === p.id),
           priceReqs.filter((r) => r.project_id === p.id),
+          cos.filter((c) => c.project_id === p.id),
         ),
       }));
-  }, [projects, events, invoices, priceReqs]);
+  }, [projects, events, invoices, priceReqs, cos]);
 
   const ourMove = lines.filter((l) => l.step.kind === "ours");
   const waiting = lines

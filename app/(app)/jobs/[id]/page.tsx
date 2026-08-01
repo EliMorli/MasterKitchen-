@@ -194,7 +194,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const approvedCOs = cos.filter((c) => c.status === "approved").reduce((s, c) => s + num(c.amount), 0);
   const expenseTotal = expenses.reduce((s, e) => s + num(e.amount), 0);
   const profit = num(project?.price) + approvedCOs - num(project?.cost) - expenseTotal;
-  const step = project ? nextStep(project, events, invoices, prices) : null;
+  const step = project ? nextStep(project, events, invoices, prices, cos) : null;
 
   if (!project) return <p className="muted p-6">Loading…</p>;
 
@@ -240,8 +240,10 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               onClick={() => {
                 setTab(t);
                 // Refetch on tab change so crew updates and vendor answers that
-                // arrived while the page was open show up without a reload.
-                reload();
+                // arrived while the page was open show up — but never while
+                // there are unsaved edits, or the switch would silently discard
+                // them (reload() overwrites the in-memory project).
+                if (!dirty) reload();
               }}
               className={`-mb-px border-b-2 px-3.5 py-2.5 text-sm font-medium transition-colors ${
                 tab === t
@@ -932,12 +934,18 @@ function AskPricesModal({
   );
   const scope = trade === "other" ? custom.trim() || "other" : trade;
 
+  const [err, setErr] = useState("");
+
   async function send() {
     if (picked.size === 0) return;
     const doc_ids = [...pickedDocs];
-    await supabase.from("price_request").insert(
+    const { error } = await supabase.from("price_request").insert(
       [...picked].map((partner_id) => ({ project_id: projectId, partner_id, scope, doc_ids })),
     );
+    if (error) {
+      setErr(error.message || "Could not create the links.");
+      return;
+    }
     logActivity(supabase, projectId, "price", `Asked ${picked.size} vendor${picked.size === 1 ? "" : "s"} for a price (${scope})`);
     if (doc_ids.length) await refreshPortalDocs(supabase, projectId, doc_ids);
     onSaved();
@@ -957,6 +965,9 @@ function AskPricesModal({
       }
     >
       <div className="space-y-4">
+        {err ? (
+          <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{err}</p>
+        ) : null}
         <Field label="What are they pricing?">
           <select value={trade} onChange={(e) => setTrade(e.target.value)} className="input capitalize">
             {TRADES.map((t) => (
@@ -1309,8 +1320,17 @@ function InvoiceModal({
     setForm((f) => ({ ...f, [k]: v }));
   }
 
-  /** Regenerate the PDF and file it under Documents (one row per invoice). */
-  async function refreshPdf(invoiceId: string, currentPayments: Payment[]) {
+  /**
+   * Regenerate the PDF and file it under Documents (one row per invoice). The
+   * caller passes an explicit snapshot of what to render — the save path passes
+   * the just-saved form values, the payment path passes the STORED invoice, so
+   * an unsaved header edit never leaks into a PDF filed by a payment.
+   */
+  async function refreshPdf(
+    invoiceId: string,
+    snap: { number: string; description: string | null; amount: number; issued_at: string | null; due_at: string | null },
+    currentPayments: Payment[],
+  ) {
     const blob = buildInvoicePdf({
       business: {
         name: org?.business_name ?? "Master Kitchen",
@@ -1321,11 +1341,11 @@ function InvoiceModal({
       },
       billTo: { company: companyName, rep: repName },
       jobAddress: [project.address, project.city].filter(Boolean).join(", "),
-      number: form.number.trim(),
-      description: form.description.trim() || null,
-      amount: num(form.amount),
-      issuedAt: form.issued_at || null,
-      dueAt: form.due_at || null,
+      number: snap.number,
+      description: snap.description,
+      amount: snap.amount,
+      issuedAt: snap.issued_at,
+      dueAt: snap.due_at,
       payments: currentPayments.map((p) => ({
         amount: num(p.amount),
         method: p.method,
@@ -1343,24 +1363,67 @@ function InvoiceModal({
       return;
     }
 
+    // Order + limit(1) rather than maybeSingle: a stray duplicate row must not
+    // throw and spawn yet another insert.
     const { data: existing } = await supabase
       .from("document")
       .select("id")
       .eq("storage_path", path)
-      .maybeSingle();
-    if (existing) {
-      await supabase
-        .from("document")
-        .update({ name: `${form.number.trim()}.pdf`, tag: "invoice" })
-        .eq("id", existing.id);
+      .order("created_at")
+      .limit(1);
+    const row = existing?.[0];
+    if (row) {
+      await supabase.from("document").update({ name: `${snap.number}.pdf`, tag: "invoice" }).eq("id", row.id);
     } else {
       await supabase.from("document").insert({
         project_id: project.id,
-        name: `${form.number.trim()}.pdf`,
+        name: `${snap.number}.pdf`,
         tag: "invoice",
         storage_path: path,
       });
     }
+  }
+
+  /**
+   * The stored invoice.status is only ever a projection of the real payments
+   * against the SAVED amount: paid when covered, sent once money or a send has
+   * happened, draft otherwise. Recompute it from the DB — never from the form —
+   * so removing a payment can't leave a stale "paid", and regenerate the PDF.
+   */
+  async function syncStored(inv: Invoice) {
+    const { data: fresh } = await supabase
+      .from("payment")
+      .select("*")
+      .eq("invoice_id", inv.id)
+      .order("paid_on");
+    const list = fresh ?? [];
+    const total = list.reduce((s, p) => s + num(p.amount), 0);
+    const amount = num(inv.amount);
+
+    let status: Invoice["status"] = inv.status;
+    let paid_at: string | null = inv.paid_at;
+    if (total >= amount && amount > 0) {
+      status = "paid";
+      paid_at = list.length ? list[list.length - 1].paid_on : inv.paid_at;
+    } else if (total > 0) {
+      status = "sent";
+      paid_at = null;
+    } else {
+      status = inv.status === "paid" ? "sent" : inv.status; // fully un-paid → back to sent
+      paid_at = null;
+    }
+    await supabase.from("invoice").update({ status, paid_at }).eq("id", inv.id);
+    await refreshPdf(
+      inv.id,
+      {
+        number: inv.number,
+        description: inv.description,
+        amount,
+        issued_at: inv.issued_at,
+        due_at: inv.due_at,
+      },
+      list,
+    );
   }
 
   async function save() {
@@ -1375,22 +1438,25 @@ function InvoiceModal({
       due_at: form.due_at || null,
     };
 
-    let invoiceId = invoice?.id ?? null;
+    let saved: Invoice | null = invoice;
     if (invoice) {
       await supabase.from("invoice").update(row).eq("id", invoice.id);
+      saved = { ...invoice, ...row };
       const changed =
         num(invoice.amount) !== row.amount
           ? `: ${money(invoice.amount)} → ${money(row.amount)}`
           : "";
       logActivity(supabase, project.id, "invoice", `Invoice ${row.number} edited${changed}`);
     } else {
-      const { data } = await supabase.from("invoice").insert(row).select("id").single();
-      invoiceId = data?.id ?? null;
+      const { data } = await supabase.from("invoice").insert(row).select("*").single();
+      saved = (data as Invoice) ?? null;
       logActivity(supabase, project.id, "invoice",
         `Invoice ${row.number} created — ${money(row.amount)}`);
     }
 
-    if (invoiceId) await refreshPdf(invoiceId, payments);
+    // Editing the amount can change whether existing payments cover it, so
+    // re-derive the stored status and PDF from the freshly-saved invoice.
+    if (saved) await syncStored(saved);
     setSaving(false);
     onSaved();
   }
@@ -1411,23 +1477,9 @@ function InvoiceModal({
     logActivity(supabase, project.id, "payment",
       `Payment recorded on ${invoice.number}: ${moneyExact(amount)} (${payMethod})`);
 
-    // Fully covered → the stored lifecycle catches up automatically.
-    const newPaid = paid + amount;
-    if (newPaid >= num(form.amount)) {
-      await supabase
-        .from("invoice")
-        .update({ status: "paid", paid_at: payDate })
-        .eq("id", invoice.id);
-    } else if (form.status === "draft") {
-      await supabase.from("invoice").update({ status: "sent" }).eq("id", invoice.id);
-    }
-
-    const { data: fresh } = await supabase
-      .from("payment")
-      .select("*")
-      .eq("invoice_id", invoice.id)
-      .order("paid_on");
-    await refreshPdf(invoice.id, fresh ?? []);
+    // Status + PDF derive from the DB against the STORED amount — never the
+    // possibly-unsaved form value.
+    await syncStored(invoice);
 
     setPayAmount("");
     setBusy(false);
@@ -1439,6 +1491,8 @@ function InvoiceModal({
     await supabase.from("payment").delete().eq("id", payId);
     logActivity(supabase, project.id, "payment",
       `Payment removed from ${invoice.number}: ${moneyExact(amount)}`);
+    // Un-paying an invoice must drop it out of "paid" and refresh the PDF.
+    await syncStored(invoice);
     onSaved();
   }
 

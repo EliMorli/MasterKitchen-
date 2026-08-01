@@ -3,8 +3,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { AUTH_COOKIE } from "@/lib/supabase/cookie";
 
 /** Paths that must stay reachable without an account. The /supa rewrite serves
- * the browser's own Supabase traffic, which carries its auth in headers. */
-const PUBLIC_PREFIXES = ["/login", "/bid/", "/u/", "/auth/", "/supa/"];
+ * the browser's own Supabase traffic, which carries its auth in headers; the
+ * WhatsApp webhook is called by Meta with no cookie and does its own secret
+ * check (verify token on GET, the shared secret through wa_ingest on POST). */
+const PUBLIC_PREFIXES = ["/login", "/bid/", "/u/", "/auth/", "/supa/", "/api/whatsapp/"];
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });

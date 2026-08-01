@@ -5,8 +5,9 @@ import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Topbar, Modal, Field, Badge } from "@/components/ui";
-import { PHASES, type Phase } from "@/lib/labels";
+import { PHASES, PHASE_LABEL, type Phase } from "@/lib/labels";
 import { nextStep } from "@/lib/next-step";
+import { logActivity } from "@/lib/activity";
 import { money } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
@@ -39,7 +40,8 @@ export default function JobsPage() {
     events: Child[];
     invoices: Child[];
     reqs: Child[];
-  }>({ events: [], invoices: [], reqs: [] });
+    cos: Child[];
+  }>({ events: [], invoices: [], reqs: [], cos: [] });
 
   useEffect(() => {
     Promise.all([
@@ -53,7 +55,8 @@ export default function JobsPage() {
       supabase.from("event").select("project_id, date, done, label"),
       supabase.from("invoice").select("project_id, status, amount, due_at, issued_at"),
       supabase.from("price_request").select("project_id, status, created_at"),
-    ]).then(([p, c, r, ev, inv, rq]) => {
+      supabase.from("change_order").select("project_id, amount, status"),
+    ]).then(([p, c, r, ev, inv, rq, co]) => {
       setProjects((p.data as Project[]) ?? []);
       setCompanies(c.data ?? []);
       setReps(r.data ?? []);
@@ -61,6 +64,7 @@ export default function JobsPage() {
         events: (ev.data as Child[]) ?? [],
         invoices: (inv.data as Child[]) ?? [],
         reqs: (rq.data as Child[]) ?? [],
+        cos: (co.data as Child[]) ?? [],
       });
       setLoading(false);
     });
@@ -80,7 +84,11 @@ export default function JobsPage() {
       setProjects((prev) =>
         prev.map((p) => (p.id === projectId ? { ...p, phase: current.phase } : p)),
       );
+      return;
     }
+    // Same as the job page's stage strip: the move is part of the story, and
+    // Pulse derives "jobs won" and "days to complete" from these rows.
+    logActivity(supabase, projectId, "phase", `Moved to ${PHASE_LABEL[phase].toLowerCase()}`, { to: phase });
   }
 
   const byPhase = useMemo(() => {
@@ -188,13 +196,14 @@ function CardStep({
   children_,
 }: {
   p: Project;
-  children_: { events: Child[]; invoices: Child[]; reqs: Child[] };
+  children_: { events: Child[]; invoices: Child[]; reqs: Child[]; cos: Child[] };
 }) {
   const step = nextStep(
     p,
     children_.events.filter((e) => e.project_id === p.id) as never,
     children_.invoices.filter((i) => i.project_id === p.id) as never,
     children_.reqs.filter((r) => r.project_id === p.id) as never,
+    children_.cos.filter((c) => c.project_id === p.id) as never,
   );
   if (step.kind === "done") return null;
   return (
@@ -249,10 +258,22 @@ function NewJobModal({
       return;
     }
     setSaving(true);
+    // The passed-in code is derived from the visible (non-archived) board;
+    // archiving the highest-numbered job would make it collide. Compute the
+    // next code against ALL projects at save time — code is unique.
+    const { data: top } = await supabase
+      .from("project")
+      .select("code")
+      .order("code", { ascending: false })
+      .limit(1);
+    const year = new Date().getFullYear();
+    const maxN = top?.[0]?.code?.match(/(\d+)$/);
+    const code = `MK-${year}-${String((maxN ? parseInt(maxN[1], 10) : 0) + 1).padStart(4, "0")}`;
+
     const { data, error } = await supabase
       .from("project")
       .insert({
-        code: nextCode,
+        code,
         address: address.trim(),
         city: city.trim() || null,
         client_company_id: companyId || null,

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { Empty, StatCard, Table, Topbar } from "@/components/ui";
-import { money, num } from "@/lib/format";
+import { money, num, toISODate } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
 type Project = Database["public"]["Tables"]["project"]["Row"] & {
@@ -17,8 +17,11 @@ type Act = { project_id: string; kind: string; detail: unknown; created_at: stri
 
 const DAY = 86_400_000;
 
+// Local month, to match the date columns (issued_at, paid_on, spent_at) which
+// are plain YYYY-MM-DD business dates — never UTC. Mixing the two flips "this
+// month" early on the last evening of a month for an East-coast user.
 function monthKey(d: Date) {
-  return d.toISOString().slice(0, 7);
+  return toISODate(d).slice(0, 7);
 }
 
 /**
@@ -71,7 +74,7 @@ export default function PulsePage() {
     );
     const outstanding = open.reduce(
       (s, i) => s + num(i.amount) - (paidByInvoice.get(i.id) ?? 0), 0);
-    const today = now.toISOString().slice(0, 10);
+    const today = toISODate(now);
     const overdue = open
       .filter((i) => i.due_at && i.due_at < today)
       .reduce((s, i) => s + num(i.amount) - (paidByInvoice.get(i.id) ?? 0), 0);
@@ -97,10 +100,12 @@ export default function PulsePage() {
       }, 0);
 
     // Flow: first time a job hit "approved" = won (from the phase log).
+    // Copy before sorting — never mutate the React state array in place.
+    const actsByTime = [...acts].sort((x, y) => x.created_at.localeCompare(y.created_at));
     const wonIn = (mk: string) => {
       const seen = new Set<string>();
       let count = 0;
-      for (const a of acts.sort((x, y) => x.created_at.localeCompare(y.created_at))) {
+      for (const a of actsByTime) {
         const to = (a.detail as { to?: string } | null)?.to;
         if (to === "approved" && !seen.has(a.project_id)) {
           seen.add(a.project_id);
@@ -231,7 +236,7 @@ export default function PulsePage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <section>
+        <section className="min-w-0">
           <h2 className="h2 mb-2">Clients — who&apos;s sending work</h2>
           {clients.length === 0 ? (
             <div className="card"><Empty title={loading ? "Loading…" : "No clients yet"} /></div>
@@ -263,7 +268,7 @@ export default function PulsePage() {
           )}
         </section>
 
-        <section>
+        <section className="min-w-0">
           <h2 className="h2 mb-2">Crews — who to keep busy</h2>
           {crews.length === 0 ? (
             <div className="card">

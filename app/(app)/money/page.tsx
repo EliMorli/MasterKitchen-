@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { Badge, Empty, StatCard, Table, Topbar } from "@/components/ui";
-import { INVOICE_TONE } from "@/lib/labels";
 import { money, num, shortDate, toISODate } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
@@ -16,6 +15,7 @@ type Expense = Database["public"]["Tables"]["expense"]["Row"] & {
 };
 type Project = Database["public"]["Tables"]["project"]["Row"];
 type CO = { project_id: string; amount: number; status: string };
+type Payment = { invoice_id: string; amount: number; paid_on: string };
 
 /**
  * All the money in one place: what's owed to us, what we spent, and what each
@@ -27,6 +27,7 @@ export default function MoneyPage() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [cos, setCos] = useState<CO[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -35,25 +36,50 @@ export default function MoneyPage() {
       supabase.from("expense").select("*, project(id, address)").order("spent_at", { ascending: false }),
       supabase.from("project").select("*").eq("archived", false),
       supabase.from("change_order").select("project_id, amount, status"),
-    ]).then(([inv, ex, pr, co]) => {
+      supabase.from("payment").select("invoice_id, amount, paid_on"),
+    ]).then(([inv, ex, pr, co, pay]) => {
       setInvoices((inv.data as Invoice[]) ?? []);
       setExpenses((ex.data as Expense[]) ?? []);
       setProjects(pr.data ?? []);
       setCos(co.data ?? []);
+      setPayments((pay.data as Payment[]) ?? []);
       setLoading(false);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const today = toISODate(new Date());
-  const outstanding = invoices
-    .filter((i) => i.status === "sent")
-    .reduce((s, i) => s + num(i.amount), 0);
-  const overdue = invoices.filter((i) => i.status === "sent" && i.due_at && i.due_at < today);
   const thisMonth = today.slice(0, 7);
-  const collected = invoices
-    .filter((i) => i.status === "paid" && i.paid_at?.startsWith(thisMonth))
-    .reduce((s, i) => s + num(i.amount), 0);
+
+  // Everything money-related derives from the payment table — the same source
+  // Pulse uses — so the two screens can never disagree. Balance per invoice is
+  // amount minus what's actually been received against it.
+  const paidByInvoice = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of payments) m.set(p.invoice_id, (m.get(p.invoice_id) ?? 0) + num(p.amount));
+    return m;
+  }, [payments]);
+  const balanceOf = (i: Invoice) => Math.max(0, num(i.amount) - (paidByInvoice.get(i.id) ?? 0));
+
+  // Live badge, derived like the job page: draft/paid/partial/overdue/sent.
+  function liveStatus(i: Invoice): { label: string; tone: string } {
+    const paid = paidByInvoice.get(i.id) ?? 0;
+    if (i.status === "draft" && paid === 0) return { label: "draft", tone: "bg-ink-100 text-ink-700" };
+    if (balanceOf(i) === 0 && num(i.amount) > 0) return { label: "paid", tone: "bg-emerald-100 text-emerald-800" };
+    if (paid > 0) return { label: "partial", tone: "bg-brand-100 text-brand-700" };
+    if (i.due_at && i.due_at < today) return { label: "overdue", tone: "bg-red-100 text-red-700" };
+    return { label: "sent", tone: "bg-sky-100 text-sky-800" };
+  }
+
+  const outstanding = invoices
+    .filter((i) => i.status !== "draft")
+    .reduce((s, i) => s + balanceOf(i), 0);
+  const overdue = invoices.filter(
+    (i) => i.status !== "draft" && balanceOf(i) > 0 && i.due_at && i.due_at < today,
+  );
+  const collected = payments
+    .filter((p) => p.paid_on?.startsWith(thisMonth))
+    .reduce((s, p) => s + num(p.amount), 0);
   const spent = expenses
     .filter((e) => e.spent_at?.startsWith(thisMonth))
     .reduce((s, e) => s + num(e.amount), 0);
@@ -112,7 +138,7 @@ export default function MoneyPage() {
                   <td className="td nums font-bold">{money(i.amount)}</td>
                   <td
                     className={`td nums ${
-                      i.status === "sent" && i.due_at && i.due_at < today
+                      balanceOf(i) > 0 && i.due_at && i.due_at < today
                         ? "font-semibold text-red-600"
                         : "text-ink-500"
                     }`}
@@ -120,7 +146,10 @@ export default function MoneyPage() {
                     {shortDate(i.due_at)}
                   </td>
                   <td className="td">
-                    <Badge tone={INVOICE_TONE[i.status]}>{i.status}</Badge>
+                    {(() => {
+                      const s = liveStatus(i);
+                      return <Badge tone={s.tone}>{s.label}</Badge>;
+                    })()}
                   </td>
                 </tr>
               ))}

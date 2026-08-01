@@ -1,4 +1,4 @@
-import { login, signup } from "./actions";
+import { login } from "./actions";
 
 export default async function LoginPage({
   searchParams,
@@ -68,13 +68,9 @@ export default async function LoginPage({
           <button formAction={login} className="btn-primary w-full">
             Sign in
           </button>
-          <button formAction={signup} className="btn-ghost w-full">
-            Create an account
-          </button>
 
           <p className="text-center text-xs text-ink-500">
-            The first account created becomes an owner. Everyone after that starts
-            as a data logger and can be promoted in Settings.
+            Accounts are created by an owner. Ask them to add you in Settings.
           </p>
         </form>
       </div>

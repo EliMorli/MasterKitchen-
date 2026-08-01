@@ -13,6 +13,7 @@ type ProjectLike = {
 type EventLike = { date: string; done: boolean; label: string };
 type InvoiceLike = { status: string; amount: number; due_at: string | null; issued_at: string | null };
 type PriceReqLike = { status: string; created_at: string };
+type COLike = { amount: number; status: string };
 
 export type NextStep = {
   label: string;
@@ -39,6 +40,7 @@ export function nextStep(
   events: EventLike[],
   invoices: InvoiceLike[],
   priceReqs: PriceReqLike[],
+  cos: COLike[] = [],
 ): NextStep {
   if (p.archived) return { label: "Archived", kind: "done" };
 
@@ -82,7 +84,8 @@ export function nextStep(
         return { label: "Set the price, send the quote", kind: "ours" };
       if (upcoming.length)
         return { label: `${upcoming[0].label} · ${upcoming[0].date.slice(5)}`, kind: "waiting" };
-      return { label: "Send the design out for prices", kind: "ours" };
+      // Prices are in and a price is set — the move is out to the rep for approval.
+      return { label: "Send the quote to the rep", kind: "ours" };
 
     case "pricing": {
       if (openReqs.length) {
@@ -114,7 +117,10 @@ export function nextStep(
       return { label: "All work done — mark complete", kind: "ours" };
 
     case "complete": {
-      if (p.price != null && invoiced < num(p.price)) {
+      // What's owed includes approved change orders, not just the base price.
+      const approvedCOs = cos.filter((c) => c.status === "approved").reduce((s, c) => s + num(c.amount), 0);
+      const revised = num(p.price) + approvedCOs;
+      if (p.price != null && invoiced < revised) {
         return { label: "Send the final invoice", kind: "ours" };
       }
       if (sent.length) {

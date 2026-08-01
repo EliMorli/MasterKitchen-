@@ -23,6 +23,17 @@ function creds() {
   return token && phoneId ? { token, phoneId } : null;
 }
 
+/**
+ * These are "use server" actions — independently POST-callable by anyone who can
+ * reach the site. RLS already blocks an anon caller from reading the project row
+ * (so no Meta call fires), but we guard explicitly too: these actions spend paid
+ * Meta credentials, so they must never run for a non-staff caller.
+ */
+async function requireStaff(supabase: Awaited<ReturnType<typeof createClient>>): Promise<boolean> {
+  const { data } = await supabase.rpc("is_staff");
+  return data === true;
+}
+
 export async function waStatus(): Promise<{
   connected: boolean;
   webhookReady: boolean;
@@ -46,6 +57,7 @@ export async function waCreateGroup(
   if (!c) return { ok: false, error: "WhatsApp is not connected — add the API credentials first." };
 
   const supabase = await createClient();
+  if (!(await requireStaff(supabase))) return { ok: false, error: "Not authorized." };
   const { data: project } = await supabase
     .from("project")
     .select("id, code, address")
@@ -104,6 +116,7 @@ export async function waSendToGroup(
   if (!text.trim()) return { ok: false, error: "Empty message." };
 
   const supabase = await createClient();
+  if (!(await requireStaff(supabase))) return { ok: false, error: "Not authorized." };
   const { data: project } = await supabase
     .from("project")
     .select("id, wa_sales_group_id, wa_crew_group_id")

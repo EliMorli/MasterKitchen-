@@ -194,6 +194,20 @@ try {
   await page.waitForTimeout(1500);
   check("invoice fully paid", await see(page, "paid"));
 
+  // Remove a payment from a fully-paid invoice — the stored status must fall
+  // back out of "paid" (the audit's #1 money bug). removePayment closes the
+  // modal on reload, so assert on the Money list badge, then reopen to re-pay.
+  await page.click("text=/MK-2026-\\d+-01/");
+  await page.locator('.fixed button[aria-label="Remove payment"]').first().click();
+  await page.waitForTimeout(1500);
+  check("un-paid invoice leaves paid state", await see(page, "partial"));
+  // put it back so the PDF/Documents checks still see a paid invoice
+  await page.click("text=/MK-2026-\\d+-01/");
+  await page.locator('.fixed input[placeholder="0.00"]').fill("10000");
+  await page.click('.fixed button:has-text("Record payment")');
+  await page.waitForTimeout(1500);
+  check("re-paid to full", await see(page, "paid"));
+
   // The PDF landed in Documents automatically.
   await page.click('button:has-text("Documents")');
   await page.waitForTimeout(1000);
