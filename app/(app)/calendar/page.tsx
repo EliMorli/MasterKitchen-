@@ -25,6 +25,7 @@ export default function CalendarPage() {
   const [projects, setProjects] = useState<ProjectOpt[]>([]);
   const [partners, setPartners] = useState<PartnerOpt[]>([]);
   const [adding, setAdding] = useState<string | null>(null); // ISO date
+  const [dayView, setDayView] = useState<string | null>(null); // ISO date
 
   const firstISO = toISODate(new Date(year, month, 1));
   const lastISO = toISODate(new Date(year, month + 1, 0));
@@ -120,7 +121,7 @@ export default function CalendarPage() {
             {cells.map((iso, i) => (
               <div
                 key={i}
-                onClick={() => iso && setAdding(iso)}
+                onClick={() => iso && setDayView(iso)}
                 className={`min-h-28 bg-white p-1.5 ${iso ? "cursor-pointer hover:bg-ink-50" : "bg-ink-50"}`}
               >
                 {iso ? (
@@ -132,25 +133,25 @@ export default function CalendarPage() {
                     >
                       {Number(iso.slice(-2))}
                     </p>
+                    {/* Chips are a preview — the whole day opens the day panel,
+                        which lists everything on that date. */}
                     <div className="space-y-1">
                       {(byDay.get(iso) ?? []).slice(0, 3).map((e) => (
-                        <Link
+                        <p
                           key={e.id}
-                          href={`/jobs/${e.project?.id}`}
-                          onClick={(ev) => ev.stopPropagation()}
-                          className={`block truncate rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                          className={`truncate rounded px-1.5 py-0.5 text-[11px] font-medium ${
                             e.done
                               ? "bg-ink-100 text-ink-400 line-through"
-                              : "bg-brand-100 text-brand-700 hover:bg-brand-200"
+                              : "bg-brand-100 text-brand-700"
                           }`}
                           title={`${e.label} — ${e.project?.address ?? ""}`}
                         >
                           {e.time ? `${timeOfDay(e.time)} ` : ""}
                           {e.label} · {e.project?.address}
-                        </Link>
+                        </p>
                       ))}
                       {(byDay.get(iso)?.length ?? 0) > 3 ? (
-                        <p className="px-1.5 text-[10px] text-ink-400">
+                        <p className="px-1.5 text-[10px] font-medium text-ink-500">
                           +{(byDay.get(iso)?.length ?? 0) - 3} more
                         </p>
                       ) : null}
@@ -162,6 +163,26 @@ export default function CalendarPage() {
           </div>
         </div>
       </div>
+
+      {dayView ? (
+        <DayPanel
+          date={dayView}
+          events={byDay.get(dayView) ?? []}
+          onClose={() => setDayView(null)}
+          onAdd={() => {
+            setAdding(dayView);
+            setDayView(null);
+          }}
+          onToggle={async (e) => {
+            await supabase.from("event").update({ done: !e.done }).eq("id", e.id);
+            await load();
+          }}
+          onDelete={async (e) => {
+            await supabase.from("event").delete().eq("id", e.id);
+            await load();
+          }}
+        />
+      ) : null}
 
       {adding ? (
         <AddEventModal
@@ -176,6 +197,80 @@ export default function CalendarPage() {
         />
       ) : null}
     </>
+  );
+}
+
+/** Everything on one date: click a job to jump to it, tick it done, or add more. */
+function DayPanel({
+  date,
+  events,
+  onClose,
+  onAdd,
+  onToggle,
+  onDelete,
+}: {
+  date: string;
+  events: Event[];
+  onClose: () => void;
+  onAdd: () => void;
+  onToggle: (e: Event) => void;
+  onDelete: (e: Event) => void;
+}) {
+  const heading = new Date(date + "T00:00:00").toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+  return (
+    <Modal
+      title={heading}
+      onClose={onClose}
+      footer={
+        <>
+          <button onClick={onClose} className="btn-ghost">Close</button>
+          <button onClick={onAdd} className="btn-brand">Add to this day</button>
+        </>
+      }
+    >
+      {events.length === 0 ? (
+        <p className="muted py-4 text-center text-sm">Nothing scheduled. Add the first thing.</p>
+      ) : (
+        <ul className="divide-y divide-ink-100">
+          {events.map((e) => (
+            <li key={e.id} className="flex items-center gap-3 py-2.5">
+              <button
+                onClick={() => onToggle(e)}
+                className={`grid h-5 w-5 shrink-0 place-items-center rounded border ${
+                  e.done ? "border-emerald-500 bg-emerald-500 text-white" : "border-ink-300"
+                }`}
+                aria-label={e.done ? "Mark not done" : "Mark done"}
+              >
+                {e.done ? "✓" : ""}
+              </button>
+              <div className="min-w-0 flex-1">
+                <p className={`text-sm font-medium ${e.done ? "text-ink-400 line-through" : "text-ink-900"}`}>
+                  {e.time ? `${timeOfDay(e.time)} · ` : ""}
+                  {e.label}
+                </p>
+                <p className="muted truncate text-xs">
+                  <Link href={`/jobs/${e.project?.id}`} className="hover:text-ink-800">
+                    {e.project?.address ?? "—"}
+                  </Link>
+                  {e.partner?.name ? ` · ${e.partner.name}` : ""}
+                </p>
+              </div>
+              <button
+                onClick={() => onDelete(e)}
+                className="shrink-0 text-ink-300 hover:text-red-600"
+                aria-label="Delete"
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Modal>
   );
 }
 

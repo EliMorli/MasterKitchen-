@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { Badge, Empty, Topbar } from "@/components/ui";
-import { DOC_TAGS } from "@/lib/labels";
 import { shortDate } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
@@ -12,12 +11,30 @@ type Doc = Database["public"]["Tables"]["document"]["Row"] & {
   project: { id: string; address: string } | null;
 };
 
-/** Every file on every job, searchable. Uploading happens on the job itself. */
+// One-tap lenses. "All" deliberately hides the auto-generated invoice PDFs —
+// they already live on each job's Money tab and would otherwise flood the list —
+// with their own chip to bring them back.
+const CHIPS = [
+  { key: "all", label: "All" },
+  { key: "design", label: "Designs" },
+  { key: "photo", label: "Photos" },
+  { key: "contract", label: "Contracts" },
+  { key: "permit", label: "Permits" },
+  { key: "crew", label: "Crew updates" },
+  { key: "invoice", label: "Invoices" },
+] as const;
+type ChipKey = (typeof CHIPS)[number]["key"];
+
+type SortKey = "newest" | "oldest" | "name" | "job";
+
+/** Every file on every job, searchable and filterable. Uploading is on the job. */
 export default function DocumentsPage() {
   const supabase = createClient();
   const [docs, setDocs] = useState<Doc[]>([]);
   const [q, setQ] = useState("");
-  const [tag, setTag] = useState("");
+  const [chip, setChip] = useState<ChipKey>("all");
+  const [jobId, setJobId] = useState("");
+  const [sort, setSort] = useState<SortKey>("newest");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -32,16 +49,42 @@ export default function DocumentsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Distinct jobs that actually have documents, for the scope dropdown.
+  const jobs = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const d of docs) if (d.project) m.set(d.project.id, d.project.address);
+    return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [docs]);
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const d of docs) {
+      c.all = (c.all ?? 0) + (d.tag !== "invoice" ? 1 : 0);
+      if (d.source === "crew") c.crew = (c.crew ?? 0) + 1;
+      c[d.tag] = (c[d.tag] ?? 0) + 1;
+    }
+    return c;
+  }, [docs]);
+
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return docs.filter((d) => {
-      if (tag && d.tag !== tag) return false;
+    const rows = docs.filter((d) => {
+      if (jobId && d.project?.id !== jobId) return false;
+      if (chip === "all" && d.tag === "invoice") return false;
+      else if (chip === "crew" && d.source !== "crew") return false;
+      else if (chip !== "all" && chip !== "crew" && d.tag !== chip) return false;
       if (!needle) return true;
       return [d.name, d.note, d.project?.address]
         .filter(Boolean)
         .some((s) => s!.toLowerCase().includes(needle));
     });
-  }, [docs, q, tag]);
+    const by = [...rows];
+    if (sort === "newest") by.sort((a, b) => b.created_at.localeCompare(a.created_at));
+    else if (sort === "oldest") by.sort((a, b) => a.created_at.localeCompare(b.created_at));
+    else if (sort === "name") by.sort((a, b) => a.name.localeCompare(b.name));
+    else if (sort === "job") by.sort((a, b) => (a.project?.address ?? "").localeCompare(b.project?.address ?? ""));
+    return by;
+  }, [docs, q, chip, jobId, sort]);
 
   async function open(doc: Doc) {
     if (!doc.storage_path) return;
@@ -55,29 +98,52 @@ export default function DocumentsPage() {
     <>
       <Topbar title="Documents" />
 
-      <div className="mb-4 flex flex-wrap gap-2">
+      <div className="mb-3 flex flex-wrap gap-2">
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
           className="input max-w-xs"
           placeholder="Search by name, note or address…"
         />
-        <select value={tag} onChange={(e) => setTag(e.target.value)} className="input w-auto">
-          <option value="">All types</option>
-          {DOC_TAGS.map((t) => (
-            <option key={t} value={t}>
-              {t}
+        <select value={jobId} onChange={(e) => setJobId(e.target.value)} className="input w-auto">
+          <option value="">All jobs</option>
+          {jobs.map(([id, address]) => (
+            <option key={id} value={id}>
+              {address}
             </option>
           ))}
         </select>
+        <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} className="input w-auto">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+          <option value="name">Name A–Z</option>
+          <option value="job">By job</option>
+        </select>
+      </div>
+
+      <div className="mb-4 flex flex-wrap gap-1.5">
+        {CHIPS.map((c) => {
+          const n = c.key === "invoice" ? counts.invoice : counts[c.key];
+          return (
+            <button
+              key={c.key}
+              onClick={() => setChip(c.key)}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                chip === c.key
+                  ? "bg-ink-900 text-white"
+                  : "bg-ink-100 text-ink-600 hover:bg-ink-200"
+              }`}
+            >
+              {c.label}
+              {n ? <span className={chip === c.key ? "text-ink-300" : "text-ink-400"}> {n}</span> : null}
+            </button>
+          );
+        })}
       </div>
 
       {filtered.length === 0 ? (
         <div className="card">
-          <Empty
-            title={loading ? "Loading…" : "Nothing here"}
-            hint="Upload from a job's Documents tab."
-          />
+          <Empty title={loading ? "Loading…" : "Nothing here"} hint="Upload from a job's Documents tab." />
         </div>
       ) : (
         <ul className="card divide-y divide-ink-100">

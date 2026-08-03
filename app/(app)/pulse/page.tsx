@@ -241,7 +241,7 @@ export default function PulsePage() {
           {clients.length === 0 ? (
             <div className="card"><Empty title={loading ? "Loading…" : "No clients yet"} /></div>
           ) : (
-            <Table head={["GC", "Jobs", "Last 30d", "Prior 30d", "Avg days to pay"]}>
+            <Table head={["GC", "Jobs", "Last 30d", "Prior 30d", "Avg pay"]} minWidth={360}>
               {clients.map((c) => {
                 const quiet = c.prev > 0 && c.now === 0;
                 const avgPay = c.payDays.length
@@ -278,7 +278,7 @@ export default function PulsePage() {
               />
             </div>
           ) : (
-            <Table head={["Crew", "Jobs", "Done", "Rating"]}>
+            <Table head={["Crew", "Jobs", "Done", "Rating"]} minWidth={320}>
               {crews.map((c) => {
                 const avg = c.ratings.length
                   ? c.ratings.reduce((a, b) => a + b, 0) / c.ratings.length

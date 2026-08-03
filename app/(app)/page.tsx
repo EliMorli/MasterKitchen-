@@ -19,6 +19,7 @@ type Event = Database["public"]["Tables"]["event"]["Row"] & {
 type Invoice = Database["public"]["Tables"]["invoice"]["Row"];
 type PriceReq = Database["public"]["Tables"]["price_request"]["Row"];
 type CO = { project_id: string; amount: number; status: string };
+type Payment = { invoice_id: string; amount: number; paid_on: string };
 
 /**
  * The brain. Not a report — a screen you work from: every live job reduced to
@@ -33,6 +34,7 @@ export default function Dashboard() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [priceReqs, setPriceReqs] = useState<PriceReq[]>([]);
   const [cos, setCos] = useState<CO[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -49,12 +51,14 @@ export default function Dashboard() {
       supabase.from("invoice").select("*"),
       supabase.from("price_request").select("*"),
       supabase.from("change_order").select("project_id, amount, status"),
-    ]).then(([pr, ev, inv, req, co]) => {
+      supabase.from("payment").select("invoice_id, amount, paid_on"),
+    ]).then(([pr, ev, inv, req, co, pay]) => {
       setProjects((pr.data as Project[]) ?? []);
       setEvents((ev.data as Event[]) ?? []);
       setInvoices(inv.data ?? []);
       setPriceReqs(req.data ?? []);
       setCos((co.data as CO[]) ?? []);
+      setPayments((pay.data as Payment[]) ?? []);
       setLoading(false);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -86,10 +90,22 @@ export default function Dashboard() {
 
   const todayEvents = events.filter((e) => e.date === today && !e.done);
   const upcoming = events.filter((e) => e.date > today && e.date <= weekOut && !e.done);
-  const outstanding = invoices
-    .filter((i) => i.status === "sent")
-    .reduce((s, i) => s + num(i.amount), 0);
   const overdueCount = lines.filter((l) => l.step.urgent && l.step.label.includes("payment")).length;
+
+  // Money, payment-derived (same source as Money and Pulse). Outstanding is the
+  // real balance per invoice; collected this week is a rolling 7-day sum.
+  const weekAgo = toISODate(new Date(Date.now() - 7 * 86_400_000));
+  const paidByInvoice = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of payments) m.set(p.invoice_id, (m.get(p.invoice_id) ?? 0) + num(p.amount));
+    return m;
+  }, [payments]);
+  const outstanding = invoices
+    .filter((i) => i.status !== "draft")
+    .reduce((s, i) => s + Math.max(0, num(i.amount) - (paidByInvoice.get(i.id) ?? 0)), 0);
+  const collectedWeek = payments
+    .filter((p) => p.paid_on >= weekAgo)
+    .reduce((s, p) => s + num(p.amount), 0);
 
   return (
     <>
@@ -102,7 +118,35 @@ export default function Dashboard() {
         })}
       />
 
-      <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
+      {todayEvents.length ? (
+        <section className="mb-5 overflow-hidden rounded-lg border border-brand-200 bg-brand-50">
+          <p className="border-b border-brand-200 px-4 py-2 text-xs font-bold uppercase tracking-wide text-brand-700">
+            On site today
+          </p>
+          <div className="scroll-x">
+            <div className="flex min-w-max gap-2 p-3">
+              {todayEvents.map((e) => (
+                <Link
+                  key={e.id}
+                  href={`/jobs/${e.project?.id}`}
+                  className="shrink-0 rounded-md border border-brand-200 bg-white px-3 py-2 text-sm hover:border-brand-400"
+                >
+                  <span className="font-semibold text-ink-900">
+                    {e.time ? `${timeOfDay(e.time)} · ` : ""}
+                    {e.label}
+                  </span>
+                  <span className="muted block text-xs">
+                    {e.project?.address}
+                    {e.partner?.name ? ` · ${e.partner.name}` : ""}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      <div className="mb-3 grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard label="Live jobs" value={String(lines.length)} />
         <StatCard label="Our move" value={String(ourMove.length)} tone="text-brand-700" />
         <StatCard label="Waiting to be paid" value={money(outstanding)} />
@@ -112,6 +156,16 @@ export default function Dashboard() {
           tone={overdueCount ? "text-red-600" : "text-ink-900"}
           hint={overdueCount ? "chase these first" : undefined}
         />
+      </div>
+
+      <div className="mb-5 flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg bg-ink-900 px-5 py-3 text-sm text-white">
+        <span className="text-xs font-bold uppercase tracking-wide text-ink-400">This week</span>
+        <span>
+          Collected <span className="nums font-bold text-emerald-400">{money(collectedWeek)}</span>
+        </span>
+        <span>
+          Still owed <span className="nums font-bold">{money(outstanding)}</span>
+        </span>
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
@@ -151,24 +205,14 @@ export default function Dashboard() {
           )}
         </section>
 
-        <section className="card">
-          <header className="border-b border-ink-200 px-5 py-2.5">
-            <p className="text-xs font-bold uppercase tracking-wide text-ink-500">On site today</p>
-          </header>
-          {todayEvents.length === 0 ? (
-            <Empty title="Nothing scheduled today" />
-          ) : (
-            <EventList events={todayEvents} />
-          )}
-        </section>
-
-        <section className="card">
-          <header className="border-b border-ink-200 px-5 py-2.5">
-            <p className="text-xs font-bold uppercase tracking-wide text-ink-500">Next 7 days</p>
-          </header>
-          {upcoming.length === 0 ? <Empty title="Nothing coming up" /> : <EventList events={upcoming} showDay />}
-        </section>
       </div>
+
+      <section className="card mt-5">
+        <header className="border-b border-ink-200 px-5 py-2.5">
+          <p className="text-xs font-bold uppercase tracking-wide text-ink-500">Next 7 days</p>
+        </header>
+        {upcoming.length === 0 ? <Empty title="Nothing coming up" /> : <EventList events={upcoming} showDay />}
+      </section>
 
       <section className="card mt-5">
         <p className="border-b border-ink-200 px-5 py-2.5 text-xs font-bold uppercase tracking-wide text-ink-500">

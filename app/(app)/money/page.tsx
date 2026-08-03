@@ -17,6 +17,10 @@ type Project = Database["public"]["Tables"]["project"]["Row"];
 type CO = { project_id: string; amount: number; status: string };
 type Payment = { invoice_id: string; amount: number; paid_on: string };
 
+type SortKey = "number" | "job" | "description" | "amount" | "due" | "status";
+// Status sorts by money-at-risk, not alphabetically — what needs chasing first.
+const STATUS_RANK: Record<string, number> = { overdue: 0, partial: 1, sent: 2, paid: 3, draft: 4 };
+
 /**
  * All the money in one place: what's owed to us, what we spent, and what each
  * job actually made. Rows link to the job — that's where editing lives.
@@ -70,6 +74,43 @@ export default function MoneyPage() {
     if (i.due_at && i.due_at < today) return { label: "overdue", tone: "bg-red-100 text-red-700" };
     return { label: "sent", tone: "bg-sky-100 text-sky-800" };
   }
+
+  // Click a column to sort; click again to flip. Default: newest invoice first.
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
+  function toggleSort(key: SortKey) {
+    setSort((s) => (s?.key === key ? { key, dir: (s.dir * -1) as 1 | -1 } : { key, dir: 1 }));
+  }
+  const sortedInvoices = useMemo(() => {
+    if (!sort) return invoices;
+    const val = (i: Invoice): string | number => {
+      switch (sort.key) {
+        case "number": return i.number;
+        case "job": return i.project?.address ?? "";
+        case "description": return i.description ?? "";
+        case "amount": return num(i.amount);
+        case "due": return i.due_at ?? "";
+        case "status": return STATUS_RANK[liveStatus(i).label] ?? 9;
+      }
+    };
+    return [...invoices].sort((a, b) => {
+      const va = val(a), vb = val(b);
+      const cmp = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb));
+      return cmp * sort.dir;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invoices, sort, paidByInvoice]);
+
+  const SortHead = ({ label, k, right }: { label: string; k: SortKey; right?: boolean }) => (
+    <button
+      onClick={() => toggleSort(k)}
+      className={`flex items-center gap-1 hover:text-ink-900 ${right ? "ml-auto" : ""}`}
+    >
+      {label}
+      <span className="text-[10px] text-ink-400">
+        {sort?.key === k ? (sort.dir === 1 ? "▲" : "▼") : "↕"}
+      </span>
+    </button>
+  );
 
   const outstanding = invoices
     .filter((i) => i.status !== "draft")
@@ -125,8 +166,17 @@ export default function MoneyPage() {
               <Empty title={loading ? "Loading…" : "No invoices yet"} hint="Invoices live on each job's Money tab." />
             </div>
           ) : (
-            <Table head={["Number", "Job", "Description", "Amount", "Due", "Status"]}>
-              {invoices.map((i) => (
+            <Table
+              head={[
+                <SortHead key="n" label="Number" k="number" />,
+                <SortHead key="j" label="Job" k="job" />,
+                <SortHead key="d" label="Description" k="description" />,
+                <SortHead key="a" label="Amount" k="amount" />,
+                <SortHead key="u" label="Due" k="due" />,
+                <SortHead key="s" label="Status" k="status" />,
+              ]}
+            >
+              {sortedInvoices.map((i) => (
                 <tr key={i.id} className="hover:bg-ink-50">
                   <td className="td nums font-semibold">
                     <Link href={`/jobs/${i.project?.id}`} className="hover:text-brand-700">

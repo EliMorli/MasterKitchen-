@@ -54,15 +54,28 @@ export function Badge({
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
-/** Simple table wrapper: pass header cells, render rows as children. */
-export function Table({ head, children }: { head: string[]; children: ReactNode }) {
+/**
+ * Simple table wrapper: pass header cells, render rows as children. Header cells
+ * may be plain strings or nodes (e.g. a sort button). `minWidth` sets the floor
+ * before the wrapper scrolls — narrow tables (Pulse) pass a smaller value so
+ * they never scroll inside their column.
+ */
+export function Table({
+  head,
+  children,
+  minWidth = 640,
+}: {
+  head: ReactNode[];
+  children: ReactNode;
+  minWidth?: number;
+}) {
   return (
     <div className="card scroll-x">
-      <table className="w-full min-w-[640px]">
+      <table className="w-full" style={{ minWidth }}>
         <thead className="border-b border-ink-200 bg-ink-50">
           <tr>
-            {head.map((h) => (
-              <th key={h} className="th">
+            {head.map((h, i) => (
+              <th key={i} className="th">
                 {h}
               </th>
             ))}
