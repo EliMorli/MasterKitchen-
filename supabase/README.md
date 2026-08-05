@@ -17,6 +17,7 @@ progression. `migrations/` holds the repo copies of everything applied since:
 | 20260731063857 | `storage_update_policy_and_portal_docs` |
 | 20260731234321 | `price_request_doc_attachments` |
 | 20260801024255 | `audit_harden_url_token_and_fk_indexes` |
+| 20260805003701 | `demo_account_lockdown` |
 
 The heart of it is one enum:
 

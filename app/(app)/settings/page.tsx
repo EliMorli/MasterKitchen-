@@ -16,16 +16,27 @@ export default function SettingsPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [wa, setWa] = useState<{ connected: boolean; webhookReady: boolean } | null>(null);
   const [flash, setFlash] = useState("");
+  const [demo, setDemo] = useState(false); // read-only, sensitive cards hidden
 
   useEffect(() => {
     supabase.from("org_setting").select("*").maybeSingle().then(({ data }) => setOrg(data));
-    supabase.from("user_account").select("*").order("created_at").then(({ data }) => setUsers(data ?? []));
-    waStatus().then(setWa).catch(() => {});
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) return;
+      const { data: me } = await supabase.from("user_account").select("is_demo").eq("id", user.id).maybeSingle();
+      const isDemo = me?.is_demo === true;
+      setDemo(isDemo);
+      // The team list and integration settings are hidden from a demo account.
+      if (!isDemo) {
+        const { data } = await supabase.from("user_account").select("*").order("created_at");
+        setUsers(data ?? []);
+        waStatus().then(setWa).catch(() => {});
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function save() {
-    if (!org) return;
+    if (!org || demo) return;
     await supabase
       .from("org_setting")
       .update({
@@ -53,21 +64,30 @@ export default function SettingsPage() {
       <Topbar
         title="Settings"
         action={
-          <div className="flex items-center gap-2">
-            {flash ? <span className="text-sm font-medium text-emerald-700">{flash}</span> : null}
-            <button onClick={save} className="btn-brand">
-              Save
-            </button>
-          </div>
+          demo ? null : (
+            <div className="flex items-center gap-2">
+              {flash ? <span className="text-sm font-medium text-emerald-700">{flash}</span> : null}
+              <button onClick={save} className="btn-brand">
+                Save
+              </button>
+            </div>
+          )
         }
       />
+
+      {demo ? (
+        <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <span className="font-semibold">Demo account.</span> Settings are read-only —
+          business details, team access and integrations can&apos;t be changed here.
+        </div>
+      ) : null}
 
       <div className="grid gap-5 lg:grid-cols-2">
         <div className="space-y-5">
           <section className="card-pad space-y-4">
             <h2 className="h2">Business</h2>
             {org ? (
-              <>
+              <fieldset disabled={demo} className="space-y-4 disabled:opacity-70">
                 <Field label="Business name">
                   <input
                     value={org.business_name}
@@ -149,54 +169,57 @@ export default function SettingsPage() {
                     ({grossMarginPct(10_000, sample).toFixed(1)}% gross margin)
                   </p>
                 </div>
-              </>
+              </fieldset>
             ) : (
               <p className="muted">Loading…</p>
             )}
           </section>
 
-          <section className="card">
-            <h2 className="h2 border-b border-ink-200 px-5 py-3">People</h2>
-            <ul className="divide-y divide-ink-100">
-              {users.map((u) => (
-                <li key={u.id} className="flex items-center justify-between px-5 py-3">
-                  <div>
-                    <p className="text-sm font-medium">{u.full_name || u.email}</p>
-                    <p className="muted text-xs">{u.email}</p>
-                  </div>
-                  <span className="text-xs capitalize text-ink-500">{u.role}</span>
-                </li>
-              ))}
-            </ul>
-          </section>
+          {!demo ? (
+            <section className="card">
+              <h2 className="h2 border-b border-ink-200 px-5 py-3">People</h2>
+              <ul className="divide-y divide-ink-100">
+                {users.map((u) => (
+                  <li key={u.id} className="flex items-center justify-between px-5 py-3">
+                    <div>
+                      <p className="text-sm font-medium">{u.full_name || u.email}</p>
+                      <p className="muted text-xs">{u.email}</p>
+                    </div>
+                    <span className="text-xs capitalize text-ink-500">{u.role}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
         </div>
 
-        <section className="card-pad space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="h2">WhatsApp (Meta Cloud API)</h2>
-            <span
-              className={`badge ${
-                wa?.connected
-                  ? "bg-emerald-100 text-emerald-800"
-                  : "bg-amber-100 text-amber-800"
-              }`}
-            >
-              {wa === null ? "checking…" : wa.connected ? "Connected" : "Not connected"}
-            </span>
-          </div>
+        {!demo ? (
+          <section className="card-pad space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="h2">WhatsApp (Meta Cloud API)</h2>
+              <span
+                className={`badge ${
+                  wa?.connected
+                    ? "bg-emerald-100 text-emerald-800"
+                    : "bg-amber-100 text-amber-800"
+                }`}
+              >
+                {wa === null ? "checking…" : wa.connected ? "Connected" : "Not connected"}
+              </span>
+            </div>
 
-          {org ? (
-            <Field label="Webhook verify token">
-              <input
-                value={org.wa_verify_token ?? ""}
-                onChange={(e) => setOrg({ ...org, wa_verify_token: e.target.value || null })}
-                className="input"
-                placeholder="Same value as WHATSAPP_VERIFY_TOKEN"
-              />
-            </Field>
-          ) : null}
-
-        </section>
+            {org ? (
+              <Field label="Webhook verify token">
+                <input
+                  value={org.wa_verify_token ?? ""}
+                  onChange={(e) => setOrg({ ...org, wa_verify_token: e.target.value || null })}
+                  className="input"
+                  placeholder="Same value as WHATSAPP_VERIFY_TOKEN"
+                />
+              </Field>
+            ) : null}
+          </section>
+        ) : null}
       </div>
     </>
   );
