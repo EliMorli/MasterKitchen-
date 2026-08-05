@@ -125,6 +125,15 @@ export default function MoneyPage() {
     .filter((e) => e.spent_at?.startsWith(thisMonth))
     .reduce((s, e) => s + num(e.amount), 0);
 
+  // Upsell = the extra the GC approved on top of the original price. Approved
+  // change orders are money already won; pending ones are still on the table.
+  const upsellWon = cos
+    .filter((c) => c.status === "approved")
+    .reduce((s, c) => s + num(c.amount), 0);
+  const upsellPending = cos
+    .filter((c) => c.status === "pending")
+    .reduce((s, c) => s + num(c.amount), 0);
+
   // Profit per job: price + approved change orders − cost − expenses.
   const profitRows = useMemo(() => {
     return projects
@@ -144,9 +153,9 @@ export default function MoneyPage() {
 
   return (
     <>
-      <Topbar title="Money" />
+      <Topbar title="Cashflow" />
 
-      <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-5">
         <StatCard label="Waiting to be paid" value={money(outstanding)} />
         <StatCard
           label="Overdue"
@@ -156,6 +165,12 @@ export default function MoneyPage() {
         />
         <StatCard label="Collected this month" value={money(collected)} tone="text-emerald-700" />
         <StatCard label="Spent this month" value={money(spent)} />
+        <StatCard
+          label="Upsell revenue"
+          value={money(upsellWon)}
+          tone="text-emerald-700"
+          hint={upsellPending ? `${money(upsellPending)} pending` : "approved change orders"}
+        />
       </div>
 
       <div className="space-y-6">

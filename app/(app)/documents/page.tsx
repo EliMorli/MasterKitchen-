@@ -86,6 +86,24 @@ export default function DocumentsPage() {
     return by;
   }, [docs, q, chip, jobId, sort]);
 
+  // The landing view: one row per job that has files, newest activity first.
+  const projectGroups = useMemo(() => {
+    const m = new Map<string, { id: string; address: string; count: number; latest: string }>();
+    for (const d of docs) {
+      if (!d.project) continue;
+      const cur =
+        m.get(d.project.id) ?? { id: d.project.id, address: d.project.address, count: 0, latest: "" };
+      cur.count += 1;
+      if (d.created_at > cur.latest) cur.latest = d.created_at;
+      m.set(d.project.id, cur);
+    }
+    return [...m.values()].sort((a, b) => b.latest.localeCompare(a.latest));
+  }, [docs]);
+
+  // Group by job until you either pick a job or start searching across all of them.
+  const grouped = jobId === "" && q.trim() === "";
+  const currentAddress = jobs.find(([id]) => id === jobId)?.[1] ?? "";
+
   async function open(doc: Doc) {
     if (!doc.storage_path) return;
     const { data } = await supabase.storage
@@ -96,52 +114,77 @@ export default function DocumentsPage() {
 
   return (
     <>
-      <Topbar title="Documents" />
+      <Topbar title="Documents" subtitle={jobId ? currentAddress : undefined} />
 
-      <div className="mb-3 flex flex-wrap gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        {jobId ? (
+          <button onClick={() => setJobId("")} className="btn-ghost text-sm">
+            ← All jobs
+          </button>
+        ) : null}
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
           className="input max-w-xs"
-          placeholder="Search by name, note or address…"
+          placeholder="Search across all jobs…"
         />
-        <select value={jobId} onChange={(e) => setJobId(e.target.value)} className="input w-auto">
-          <option value="">All jobs</option>
-          {jobs.map(([id, address]) => (
-            <option key={id} value={id}>
-              {address}
-            </option>
-          ))}
-        </select>
-        <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} className="input w-auto">
-          <option value="newest">Newest first</option>
-          <option value="oldest">Oldest first</option>
-          <option value="name">Name A–Z</option>
-          <option value="job">By job</option>
-        </select>
+        {!grouped ? (
+          <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} className="input w-auto">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="name">Name A–Z</option>
+            <option value="job">By job</option>
+          </select>
+        ) : null}
       </div>
 
-      <div className="mb-4 flex flex-wrap gap-1.5">
-        {CHIPS.map((c) => {
-          const n = c.key === "invoice" ? counts.invoice : counts[c.key];
-          return (
-            <button
-              key={c.key}
-              onClick={() => setChip(c.key)}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                chip === c.key
-                  ? "bg-ink-900 text-white"
-                  : "bg-ink-100 text-ink-600 hover:bg-ink-200"
-              }`}
-            >
-              {c.label}
-              {n ? <span className={chip === c.key ? "text-ink-300" : "text-ink-400"}> {n}</span> : null}
-            </button>
-          );
-        })}
-      </div>
+      {!grouped ? (
+        <div className="mb-4 flex flex-wrap gap-1.5">
+          {CHIPS.map((c) => {
+            const n = c.key === "invoice" ? counts.invoice : counts[c.key];
+            return (
+              <button
+                key={c.key}
+                onClick={() => setChip(c.key)}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                  chip === c.key
+                    ? "bg-ink-900 text-white"
+                    : "bg-ink-100 text-ink-600 hover:bg-ink-200"
+                }`}
+              >
+                {c.label}
+                {n ? <span className={chip === c.key ? "text-ink-300" : "text-ink-400"}> {n}</span> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
 
-      {filtered.length === 0 ? (
+      {grouped ? (
+        projectGroups.length === 0 ? (
+          <div className="card">
+            <Empty title={loading ? "Loading…" : "No documents yet"} hint="Upload from a job's Documents tab." />
+          </div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {projectGroups.map((g) => (
+              <button
+                key={g.id}
+                onClick={() => setJobId(g.id)}
+                className="card flex items-center justify-between gap-3 px-5 py-3.5 text-left hover:bg-ink-50"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-ink-900">{g.address}</p>
+                  <p className="muted text-xs">Updated {shortDate(g.latest.slice(0, 10))}</p>
+                </div>
+                <Badge tone="bg-ink-100 text-ink-700">
+                  {g.count} {g.count === 1 ? "file" : "files"}
+                </Badge>
+              </button>
+            ))}
+          </div>
+        )
+      ) : filtered.length === 0 ? (
         <div className="card">
           <Empty title={loading ? "Loading…" : "Nothing here"} hint="Upload from a job's Documents tab." />
         </div>

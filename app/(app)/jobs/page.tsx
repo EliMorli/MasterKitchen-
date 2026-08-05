@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Plus } from "lucide-react";
+import { Plus, LayoutGrid, List } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { Topbar, Modal, Field, Badge } from "@/components/ui";
+import { Topbar, Modal, Field, Badge, Table, Empty } from "@/components/ui";
 import { PHASES, PHASE_LABEL, type Phase } from "@/lib/labels";
 import { nextStep } from "@/lib/next-step";
 import { logActivity } from "@/lib/activity";
@@ -35,6 +36,17 @@ export default function JobsPage() {
   const [creating, setCreating] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<Phase | null>(null);
+  // Board is the default; the owner's choice sticks across visits.
+  const [view, setView] = useState<"board" | "list">("board");
+
+  useEffect(() => {
+    const saved = localStorage.getItem("jobsView");
+    if (saved === "list" || saved === "board") setView(saved);
+  }, []);
+  function pickView(v: "board" | "list") {
+    setView(v);
+    localStorage.setItem("jobsView", v);
+  }
 
   const [children, setChildren] = useState<{
     events: Child[];
@@ -104,12 +116,37 @@ export default function JobsPage() {
         title="Jobs"
         subtitle={loading ? "Loading…" : `${projects.length} active`}
         action={
-          <button onClick={() => setCreating(true)} className="btn-brand">
-            <Plus size={16} /> New job
-          </button>
+          <div className="flex items-center gap-2">
+            <div className="flex rounded-lg border border-ink-200 p-0.5">
+              <button
+                onClick={() => pickView("board")}
+                aria-label="Board view"
+                className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold ${
+                  view === "board" ? "bg-ink-900 text-white" : "text-ink-500 hover:text-ink-800"
+                }`}
+              >
+                <LayoutGrid size={14} /> Board
+              </button>
+              <button
+                onClick={() => pickView("list")}
+                aria-label="List view"
+                className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold ${
+                  view === "list" ? "bg-ink-900 text-white" : "text-ink-500 hover:text-ink-800"
+                }`}
+              >
+                <List size={14} /> List
+              </button>
+            </div>
+            <button onClick={() => setCreating(true)} className="btn-brand">
+              <Plus size={16} /> New job
+            </button>
+          </div>
         }
       />
 
+      {view === "list" ? (
+        <JobsList projects={projects} children_={children} loading={loading} onMove={moveTo} />
+      ) : (
       <div className="scroll-x pb-2">
         <div className="flex min-w-max gap-3">
           {PHASES.map((ph) => {
@@ -176,6 +213,7 @@ export default function JobsPage() {
           })}
         </div>
       </div>
+      )}
 
       {creating ? (
         <NewJobModal
@@ -215,6 +253,111 @@ function CardStep({
       {step.urgent ? "⚠ " : ""}
       {step.label}
     </p>
+  );
+}
+
+const PHASE_INDEX: Record<Phase, number> = Object.fromEntries(
+  PHASES.map((p, i) => [p.key, i]),
+) as Record<Phase, number>;
+
+/**
+ * The same board, flattened to a table for people who scan faster than they
+ * drag. Phase is an inline dropdown — changing it runs the same `moveTo` a drop
+ * does, so the two views stay in lockstep. Next step reuses the board's logic.
+ */
+function JobsList({
+  projects,
+  children_,
+  loading,
+  onMove,
+}: {
+  projects: Project[];
+  children_: { events: Child[]; invoices: Child[]; reqs: Child[]; cos: Child[] };
+  loading: boolean;
+  onMove: (id: string, phase: Phase) => void;
+}) {
+  const rows = useMemo(
+    () =>
+      [...projects].sort(
+        (a, b) =>
+          PHASE_INDEX[a.phase] - PHASE_INDEX[b.phase] || a.address.localeCompare(b.address),
+      ),
+    [projects],
+  );
+
+  if (rows.length === 0) {
+    return (
+      <div className="card">
+        <Empty title={loading ? "Loading…" : "No active jobs"} hint="Start one with New job." />
+      </div>
+    );
+  }
+
+  return (
+    <Table head={["Job", "Client · Rep", "Phase", "Next step", "Price", "Code"]} minWidth={760}>
+      {rows.map((p) => {
+        const step = nextStep(
+          p,
+          children_.events.filter((e) => e.project_id === p.id) as never,
+          children_.invoices.filter((i) => i.project_id === p.id) as never,
+          children_.reqs.filter((r) => r.project_id === p.id) as never,
+          children_.cos.filter((c) => c.project_id === p.id) as never,
+        );
+        const dot = PHASES[PHASE_INDEX[p.phase]]?.dot ?? "bg-ink-400";
+        return (
+          <tr key={p.id} className="hover:bg-ink-50">
+            <td className="td font-semibold">
+              <Link href={`/jobs/${p.id}`} className="hover:text-brand-700">
+                {p.address}
+              </Link>
+            </td>
+            <td className="td text-ink-600">
+              {p.client_company?.name ?? "No client"}
+              {p.contact?.name ? ` · ${p.contact.name}` : ""}
+            </td>
+            <td className="td">
+              <span className="flex items-center gap-2">
+                <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
+                <select
+                  value={p.phase}
+                  onChange={(e) => onMove(p.id, e.target.value as Phase)}
+                  className="input w-auto py-1 text-sm"
+                  aria-label="Phase"
+                >
+                  {PHASES.map((ph) => (
+                    <option key={ph.key} value={ph.key}>
+                      {ph.label}
+                    </option>
+                  ))}
+                </select>
+              </span>
+            </td>
+            <td
+              className={`td text-sm ${
+                step.kind === "done"
+                  ? "text-ink-400"
+                  : step.urgent
+                    ? "font-medium text-red-600"
+                    : step.kind === "ours"
+                      ? "font-medium text-brand-700"
+                      : "text-ink-500"
+              }`}
+            >
+              {step.urgent ? "⚠ " : ""}
+              {step.label}
+            </td>
+            <td className="td nums">
+              {p.price != null ? (
+                <Badge tone="bg-emerald-100 text-emerald-800">{money(p.price)}</Badge>
+              ) : (
+                "—"
+              )}
+            </td>
+            <td className="td nums text-ink-500">{p.code}</td>
+          </tr>
+        );
+      })}
+    </Table>
   );
 }
 

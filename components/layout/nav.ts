@@ -22,7 +22,7 @@ export const NAV_GROUPS: { heading: string; items: NavItem[] }[] = [
     heading: "Today",
     items: [
       { href: "/", label: "Dashboard", icon: LayoutDashboard },
-      { href: "/pulse", label: "Pulse", icon: Gauge },
+      { href: "/pulse", label: "Financial Board", icon: Gauge },
       { href: "/calendar", label: "Calendar", icon: CalendarDays },
     ],
   },
@@ -30,7 +30,7 @@ export const NAV_GROUPS: { heading: string; items: NavItem[] }[] = [
     heading: "Work",
     items: [
       { href: "/jobs", label: "Jobs", icon: Hammer },
-      { href: "/money", label: "Money", icon: Wallet },
+      { href: "/money", label: "Cashflow", icon: Wallet },
       { href: "/documents", label: "Documents", icon: FolderOpen },
     ],
   },

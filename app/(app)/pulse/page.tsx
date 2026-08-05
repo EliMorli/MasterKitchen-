@@ -196,7 +196,7 @@ export default function PulsePage() {
 
   return (
     <>
-      <Topbar title="Pulse" />
+      <Topbar title="Financial Board" />
 
       <p className="mb-2 text-xs font-bold uppercase tracking-wide text-ink-500">Money now</p>
       <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">

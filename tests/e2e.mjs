@@ -272,6 +272,33 @@ try {
   check("pulse renders", await see(page, "Waiting to be paid"));
   check("pulse client table", await see(page, "Ridgeline GC"));
 
+  // --- This round's additions ---
+
+  // Cashflow: renamed title + upsell (change-order) revenue stat
+  await page.goto(`${BASE}/money`, { waitUntil: "networkidle" });
+  check("cashflow renamed title", await see(page, "Cashflow"));
+  check("cashflow upsell stat", await see(page, "Upsell revenue"));
+
+  // Financial Board: renamed Pulse
+  await page.goto(`${BASE}/pulse`, { waitUntil: "networkidle" });
+  check("financial board renamed title", await see(page, "Financial Board"));
+
+  // Jobs: list-view toggle flattens the board into a table
+  await page.goto(`${BASE}/jobs`, { waitUntil: "networkidle" });
+  await page.click('button:has-text("List")');
+  await page.waitForTimeout(400);
+  check("jobs list view renders", await see(page, "Next step"));
+  check("jobs list shows the job", await see(page, "412 Maple St"));
+
+  // Clients: per-company financial rollup
+  await page.goto(`${BASE}/clients`, { waitUntil: "networkidle" });
+  check("clients show net profit", await see(page, "Net profit"));
+  check("clients show collected", await see(page, "Collected"));
+
+  // Documents: grouped-by-job landing
+  await page.goto(`${BASE}/documents`, { waitUntil: "networkidle" });
+  check("documents grouped by job", await see(page, "Updated"));
+
   // Dashboard + calendar render
   await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
   check("dashboard renders", await see(page, "The board"));

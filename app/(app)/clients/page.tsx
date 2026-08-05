@@ -1,30 +1,75 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { Empty, Field, Modal, Topbar } from "@/components/ui";
+import { Badge, Empty, Field, Modal, Topbar } from "@/components/ui";
+import { PHASE_LABEL, PHASE_TONE, type Phase } from "@/lib/labels";
+import { money, num } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
 type Company = Database["public"]["Tables"]["client_company"]["Row"] & {
   contact: { id: string; name: string; phone: string | null; email: string | null }[];
 };
 type Rep = Company["contact"][number];
+type Proj = {
+  id: string;
+  address: string;
+  phase: Phase;
+  price: number | null;
+  cost: number | null;
+  client_company_id: string | null;
+  archived: boolean;
+  created_at: string;
+};
+type Inv = { id: string; project_id: string; amount: number; status: string };
+type Pay = { invoice_id: string; amount: number };
+type CO = { project_id: string; amount: number; status: string };
+type Exp = { project_id: string; amount: number };
 
-/** The GC companies, with the sales reps who actually send the work. */
+/** What each GC is worth: open work, money in, money out, and profit. */
+type Stats = {
+  openProjects: Proj[];
+  collected: number;
+  outstanding: number;
+  netProfit: number;
+  avgPerJob: number;
+  avgPct: number;
+  avgMonthly: number;
+  pricedCount: number;
+};
+
+/** The GC companies, with the sales reps who send the work and what each is worth. */
 export default function ClientsPage() {
   const supabase = createClient();
   const [companies, setCompanies] = useState<Company[]>([]);
+  const [projects, setProjects] = useState<Proj[]>([]);
+  const [invoices, setInvoices] = useState<Inv[]>([]);
+  const [payments, setPayments] = useState<Pay[]>([]);
+  const [cos, setCos] = useState<CO[]>([]);
+  const [expenses, setExpenses] = useState<Exp[]>([]);
   const [modal, setModal] = useState<Company | "new" | null>(null);
   const [repModal, setRepModal] = useState<{ companyId: string; rep: Rep | null } | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const { data } = await supabase
-      .from("client_company")
-      .select("*, contact(id, name, phone, email)")
-      .order("name");
-    setCompanies((data as Company[]) ?? []);
+    const [co, pr, inv, pay, cor, exp] = await Promise.all([
+      supabase.from("client_company").select("*, contact(id, name, phone, email)").order("name"),
+      supabase
+        .from("project")
+        .select("id, address, phase, price, cost, client_company_id, archived, created_at"),
+      supabase.from("invoice").select("id, project_id, amount, status"),
+      supabase.from("payment").select("invoice_id, amount"),
+      supabase.from("change_order").select("project_id, amount, status"),
+      supabase.from("expense").select("project_id, amount"),
+    ]);
+    setCompanies((co.data as Company[]) ?? []);
+    setProjects((pr.data as Proj[]) ?? []);
+    setInvoices((inv.data as Inv[]) ?? []);
+    setPayments((pay.data as Pay[]) ?? []);
+    setCos((cor.data as CO[]) ?? []);
+    setExpenses((exp.data as Exp[]) ?? []);
     setLoading(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -32,6 +77,74 @@ export default function ClientsPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // One pass over the children, then a per-company rollup — same formulas the
+  // Cashflow screen uses, so the two can never disagree.
+  const statsByCompany = useMemo(() => {
+    const paidByInvoice = new Map<string, number>();
+    for (const p of payments)
+      paidByInvoice.set(p.invoice_id, (paidByInvoice.get(p.invoice_id) ?? 0) + num(p.amount));
+    const projectCompany = new Map<string, string | null>();
+    for (const p of projects) projectCompany.set(p.id, p.client_company_id);
+    const approvedCoByProject = new Map<string, number>();
+    for (const c of cos)
+      if (c.status === "approved")
+        approvedCoByProject.set(
+          c.project_id,
+          (approvedCoByProject.get(c.project_id) ?? 0) + num(c.amount),
+        );
+    const expenseByProject = new Map<string, number>();
+    for (const e of expenses)
+      expenseByProject.set(e.project_id, (expenseByProject.get(e.project_id) ?? 0) + num(e.amount));
+
+    const now = new Date();
+    const map = new Map<string, Stats>();
+    for (const c of companies) {
+      const projs = projects.filter((p) => p.client_company_id === c.id);
+      const openProjects = projs
+        .filter((p) => !p.archived && p.phase !== "paid")
+        .sort((a, b) => a.address.localeCompare(b.address));
+
+      const companyInvoices = invoices.filter((i) => projectCompany.get(i.project_id) === c.id);
+      const collected = companyInvoices.reduce((s, i) => s + (paidByInvoice.get(i.id) ?? 0), 0);
+      const outstanding = companyInvoices
+        .filter((i) => i.status !== "draft")
+        .reduce((s, i) => s + Math.max(0, num(i.amount) - (paidByInvoice.get(i.id) ?? 0)), 0);
+
+      const priced = projs.filter((p) => p.price != null || p.cost != null);
+      let contractValue = 0;
+      let netProfit = 0;
+      for (const p of priced) {
+        const extras = approvedCoByProject.get(p.id) ?? 0;
+        contractValue += num(p.price) + extras;
+        netProfit += num(p.price) + extras - num(p.cost) - (expenseByProject.get(p.id) ?? 0);
+      }
+      const first = projs.reduce<string | null>(
+        (m, p) => (m == null || p.created_at < m ? p.created_at : m),
+        null,
+      );
+      const months = first
+        ? Math.max(
+            1,
+            (now.getFullYear() - new Date(first).getFullYear()) * 12 +
+              (now.getMonth() - new Date(first).getMonth()) +
+              1,
+          )
+        : 1;
+
+      map.set(c.id, {
+        openProjects,
+        collected,
+        outstanding,
+        netProfit,
+        avgPerJob: priced.length ? netProfit / priced.length : 0,
+        avgPct: contractValue > 0 ? Math.round((netProfit / contractValue) * 1000) / 10 : 0,
+        avgMonthly: netProfit / months,
+        pricedCount: priced.length,
+      });
+    }
+    return map;
+  }, [companies, projects, invoices, payments, cos, expenses]);
 
   return (
     <>
@@ -50,42 +163,99 @@ export default function ClientsPage() {
         </div>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
-          {companies.map((c) => (
-            <section key={c.id} className="card">
-              <header
-                onClick={() => setModal(c)}
-                className="flex cursor-pointer items-center justify-between border-b border-ink-200 px-5 py-3 hover:bg-ink-50"
-              >
-                <div>
-                  <h2 className="h2">{c.name}</h2>
-                  <p className="muted text-xs">
-                    {[c.phone, c.email].filter(Boolean).join(" · ") || "No contact info"}
-                  </p>
-                </div>
-                <span className="text-xs font-medium text-ink-400">Edit</span>
-              </header>
-              <ul className="divide-y divide-ink-100">
-                {c.contact.map((r) => (
-                  <li
-                    key={r.id}
-                    onClick={() => setRepModal({ companyId: c.id, rep: r })}
-                    className="flex cursor-pointer items-center justify-between px-5 py-2.5 hover:bg-ink-50"
-                  >
-                    <p className="text-sm font-medium text-ink-900">{r.name}</p>
-                    <p className="muted text-xs">{r.phone ?? ""}</p>
-                  </li>
-                ))}
-                <li className="px-5 py-2.5">
+          {companies.map((c) => {
+            const s = statsByCompany.get(c.id);
+            return (
+              <section key={c.id} className="card">
+                <header className="flex items-center justify-between border-b border-ink-200 px-5 py-3">
+                  <div>
+                    <h2 className="h2">{c.name}</h2>
+                    <p className="muted text-xs">
+                      {[c.phone, c.email].filter(Boolean).join(" · ") || "No contact info"}
+                    </p>
+                  </div>
                   <button
-                    onClick={() => setRepModal({ companyId: c.id, rep: null })}
-                    className="text-xs font-semibold text-brand-700 hover:text-brand-600"
+                    onClick={() => setModal(c)}
+                    className="text-xs font-semibold text-ink-400 hover:text-ink-700"
                   >
-                    + Add a rep
+                    Edit
                   </button>
-                </li>
-              </ul>
-            </section>
-          ))}
+                </header>
+
+                <div className="grid grid-cols-3 gap-x-4 gap-y-3 px-5 py-4">
+                  <Metric label="Open jobs" value={String(s?.openProjects.length ?? 0)} />
+                  <Metric label="Collected" value={money(s?.collected ?? 0)} />
+                  <Metric
+                    label="Outstanding"
+                    value={money(s?.outstanding ?? 0)}
+                    tone={s && s.outstanding > 0 ? "text-red-600" : "text-ink-900"}
+                  />
+                  <Metric
+                    label="Net profit"
+                    value={money(s?.netProfit ?? 0)}
+                    tone={s && s.netProfit < 0 ? "text-red-600" : "text-emerald-700"}
+                  />
+                  <Metric
+                    label="Avg / job"
+                    value={s?.pricedCount ? money(s.avgPerJob) : "—"}
+                    hint={s?.pricedCount ? `${s.avgPct}% margin` : undefined}
+                  />
+                  <Metric
+                    label="Avg / month"
+                    value={s?.pricedCount ? money(s.avgMonthly) : "—"}
+                  />
+                </div>
+
+                {s && s.openProjects.length > 0 ? (
+                  <div className="border-t border-ink-100 px-5 py-3">
+                    <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-ink-500">
+                      Active jobs
+                    </p>
+                    <ul className="space-y-1">
+                      {s.openProjects.slice(0, 6).map((p) => (
+                        <li key={p.id} className="flex items-center justify-between gap-2 text-sm">
+                          <Link
+                            href={`/jobs/${p.id}`}
+                            className="truncate font-medium text-ink-800 hover:text-brand-700"
+                          >
+                            {p.address}
+                          </Link>
+                          <span className="flex shrink-0 items-center gap-2">
+                            <Badge tone={PHASE_TONE[p.phase]}>{PHASE_LABEL[p.phase]}</Badge>
+                            <span className="nums text-xs text-ink-500">{money(p.price)}</span>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    {s.openProjects.length > 6 ? (
+                      <p className="muted mt-1 text-xs">+{s.openProjects.length - 6} more</p>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <ul className="divide-y divide-ink-100 border-t border-ink-100">
+                  {c.contact.map((r) => (
+                    <li
+                      key={r.id}
+                      onClick={() => setRepModal({ companyId: c.id, rep: r })}
+                      className="flex cursor-pointer items-center justify-between px-5 py-2.5 hover:bg-ink-50"
+                    >
+                      <p className="text-sm font-medium text-ink-900">{r.name}</p>
+                      <p className="muted text-xs">{r.phone ?? ""}</p>
+                    </li>
+                  ))}
+                  <li className="px-5 py-2.5">
+                    <button
+                      onClick={() => setRepModal({ companyId: c.id, rep: null })}
+                      className="text-xs font-semibold text-brand-700 hover:text-brand-600"
+                    >
+                      + Add a rep
+                    </button>
+                  </li>
+                </ul>
+              </section>
+            );
+          })}
         </div>
       )}
 
@@ -111,6 +281,27 @@ export default function ClientsPage() {
         />
       ) : null}
     </>
+  );
+}
+
+/** One compact number on a client card — smaller than a StatCard, six to a grid. */
+function Metric({
+  label,
+  value,
+  hint,
+  tone = "text-ink-900",
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  tone?: string;
+}) {
+  return (
+    <div>
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-500">{label}</p>
+      <p className={`nums mt-0.5 text-lg font-bold ${tone}`}>{value}</p>
+      {hint ? <p className="muted text-[11px]">{hint}</p> : null}
+    </div>
   );
 }
 
