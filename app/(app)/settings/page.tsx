@@ -242,6 +242,8 @@ function AutomationsCard({ demo }: { demo: boolean }) {
   const [rows, setRows] = useState<Automation[]>([]);
   const [adding, setAdding] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Per-row template drafts; a row appears here only once its text was edited.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
 
   async function load() {
     const { data } = await supabase.from("automation").select("*").order("created_at");
@@ -272,6 +274,20 @@ function AutomationsCard({ demo }: { demo: boolean }) {
     await load();
   }
 
+  async function saveTemplate(a: Automation) {
+    if (demo) return;
+    const text = drafts[a.id];
+    if (text == null) return;
+    const config = { ...(a.config as Record<string, unknown>), template: text.trim() };
+    await supabase.from("automation").update({ config }).eq("id", a.id);
+    setDrafts((d) => {
+      const next = { ...d };
+      delete next[a.id];
+      return next;
+    });
+    await load();
+  }
+
   const available = AUTOMATION_CATALOG.filter((d) => !rows.some((r) => r.kind === d.kind));
 
   return (
@@ -296,11 +312,32 @@ function AutomationsCard({ demo }: { demo: boolean }) {
         <ul className="divide-y divide-ink-100">
           {rows.map((a) => {
             const def = AUTOMATION_CATALOG.find((d) => d.kind === a.kind);
+            const stored = ((a.config as Record<string, unknown>)?.template as string) ?? "";
+            const draft = drafts[a.id];
             return (
               <li key={a.id} className="flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0">
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-ink-900">{def?.name ?? a.kind}</p>
                   {def ? <p className="muted mt-0.5 text-xs">{def.description}</p> : null}
+                  {def?.hasTemplate ? (
+                    <div className="mt-2">
+                      <textarea
+                        rows={3}
+                        value={draft ?? stored}
+                        onChange={(e) => setDrafts((d) => ({ ...d, [a.id]: e.target.value }))}
+                        disabled={demo}
+                        className="input text-xs"
+                      />
+                      {draft != null && draft.trim() !== stored ? (
+                        <button
+                          onClick={() => saveTemplate(a)}
+                          className="mt-1.5 rounded-md bg-ink-900 px-2.5 py-1 text-xs font-semibold text-white hover:bg-ink-800"
+                        >
+                          Save template
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <button

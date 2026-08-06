@@ -326,6 +326,11 @@ try {
   await page.goto(`${BASE}/partners`, { waitUntil: "networkidle" });
   check("partners on-now column", await see(page, "On now"));
 
+  // Marketing landing page: public, with the TCPA opt-in language
+  await page.goto(`${BASE}/start?src=facebook&utm_campaign=e2e`, { waitUntil: "networkidle" });
+  check("landing page renders", await see(page, "Get your kitchen quote"));
+  check("tcpa consent shown", await see(page, "Reply STOP"));
+
   // Job page: Communications tab with the chat window
   await page.goto(projectUrl, { waitUntil: "networkidle" });
   await page.click('button:has-text("Communications")');

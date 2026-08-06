@@ -88,6 +88,8 @@ export const LEAD_STAGES: { key: string; label: string; dot: string; column: str
 export const LEAD_SOURCES = [
   "referral",
   "gc",
+  "facebook",
+  "google",
   "website",
   "social",
   "walk_in",
@@ -97,10 +99,19 @@ export const LEAD_SOURCES = [
 export const LEAD_SOURCE_LABEL: Record<string, string> = {
   referral: "Referral",
   gc: "GC",
+  facebook: "Facebook",
+  google: "Google",
   website: "Website",
   social: "Social",
   walk_in: "Walk-in",
   other: "Other",
+};
+
+/** Ad-platform leads pop against the rest of the board. */
+export const LEAD_SOURCE_TONE: Record<string, string> = {
+  facebook: "bg-sky-100 text-sky-800",
+  google: "bg-red-100 text-red-700",
+  website: "bg-emerald-100 text-emerald-800",
 };
 
 /** Common calendar entries, offered as quick picks — free text always allowed. */

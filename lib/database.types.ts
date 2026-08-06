@@ -364,11 +364,15 @@ export type Database = {
           id: string
           name: string
           notes: string | null
+          opt_in_at: string | null
+          opt_in_text: string | null
           phone: string | null
           project_id: string | null
+          sms_opt_in: boolean
           source: string
           status: string
           updated_at: string
+          utm: Json
         }
         Insert: {
           address?: string | null
@@ -380,11 +384,15 @@ export type Database = {
           id?: string
           name: string
           notes?: string | null
+          opt_in_at?: string | null
+          opt_in_text?: string | null
           phone?: string | null
           project_id?: string | null
+          sms_opt_in?: boolean
           source?: string
           status?: string
           updated_at?: string
+          utm?: Json
         }
         Update: {
           address?: string | null
@@ -396,11 +404,15 @@ export type Database = {
           id?: string
           name?: string
           notes?: string | null
+          opt_in_at?: string | null
+          opt_in_text?: string | null
           phone?: string | null
           project_id?: string | null
+          sms_opt_in?: boolean
           source?: string
           status?: string
           updated_at?: string
+          utm?: Json
         }
         Relationships: [
           {
@@ -743,6 +755,7 @@ export type Database = {
           group_external_id: string | null
           id: string
           important: boolean
+          lead_id: string | null
           project_id: string | null
           read_at: string | null
           status: string
@@ -759,6 +772,7 @@ export type Database = {
           group_external_id?: string | null
           id?: string
           important?: boolean
+          lead_id?: string | null
           project_id?: string | null
           read_at?: string | null
           status?: string
@@ -775,6 +789,7 @@ export type Database = {
           group_external_id?: string | null
           id?: string
           important?: boolean
+          lead_id?: string | null
           project_id?: string | null
           read_at?: string | null
           status?: string
@@ -782,6 +797,13 @@ export type Database = {
           wamid?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "wa_message_lead_id_fkey"
+            columns: ["lead_id"]
+            isOneToOne: false
+            referencedRelation: "lead"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "wa_message_project_id_fkey"
             columns: ["project_id"]
@@ -797,6 +819,20 @@ export type Database = {
     }
     Functions: {
       is_demo: { Args: never; Returns: boolean }
+      lead_intake: {
+        Args: {
+          p_name: string
+          p_phone: string
+          p_email?: string
+          p_zip?: string
+          p_project?: string
+          p_source?: string
+          p_utm?: Json
+          p_opt_in?: boolean
+          p_opt_in_text?: string
+        }
+        Returns: boolean
+      }
       is_staff: { Args: never; Returns: boolean }
       portal_get_job: { Args: { p_token: string }; Returns: Json }
       portal_get_price: { Args: { p_token: string }; Returns: Json }

@@ -9,9 +9,18 @@ export type AutomationDef = {
   kind: string;
   name: string;
   description: string;
+  /** Has an editable message template in config.template ({name} fills in). */
+  hasTemplate?: boolean;
 };
 
 export const AUTOMATION_CATALOG: AutomationDef[] = [
+  {
+    kind: "lead_welcome",
+    name: "Welcome text to new leads",
+    description:
+      "The moment an opted-in lead arrives from an ad or the landing page, a welcome text is queued for them — sent automatically once texting is connected, one tap from the Lead Board until then. {name} fills in their first name.",
+    hasTemplate: true,
+  },
   {
     kind: "invoice_draft_on_complete",
     name: "Draft the final invoice when a job completes",

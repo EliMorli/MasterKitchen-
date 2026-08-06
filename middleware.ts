@@ -6,7 +6,16 @@ import { AUTH_COOKIE } from "@/lib/supabase/cookie";
  * the browser's own Supabase traffic, which carries its auth in headers; the
  * WhatsApp webhook is called by Meta with no cookie and does its own secret
  * check (verify token on GET, the shared secret through wa_ingest on POST). */
-const PUBLIC_PREFIXES = ["/login", "/bid/", "/u/", "/auth/", "/supa/", "/api/whatsapp/"];
+const PUBLIC_PREFIXES = [
+  "/login",
+  "/bid/",
+  "/u/",
+  "/auth/",
+  "/supa/",
+  "/api/whatsapp/",
+  "/start", // the marketing opt-in page — ad traffic has no account
+  "/api/leads/", // ad-platform webhooks post leads here (lead_intake throttles)
+];
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });

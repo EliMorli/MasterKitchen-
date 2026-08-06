@@ -102,7 +102,9 @@ export default function CommunicationsPage() {
   }, [threads, q]);
 
   const attention = shown.filter((t) => t.unread > 0 || t.important > 0);
-  const unrouted = msgs.filter((m) => !m.project_id);
+  // Lead-thread messages aren't unrouted — they live on the Lead Board until
+  // the lead becomes a job and brings its thread along.
+  const unrouted = msgs.filter((m) => !m.project_id && !m.lead_id);
   // Any job can be opened — including one with no messages yet (that's what
   // "New message" does); its stats simply don't exist yet.
   const openProject = projects.find((p) => p.id === openId) ?? null;
