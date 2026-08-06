@@ -52,6 +52,30 @@ export type Database = {
           },
         ]
       }
+      automation: {
+        Row: {
+          config: Json
+          created_at: string
+          enabled: boolean
+          id: string
+          kind: string
+        }
+        Insert: {
+          config?: Json
+          created_at?: string
+          enabled?: boolean
+          id?: string
+          kind: string
+        }
+        Update: {
+          config?: Json
+          created_at?: string
+          enabled?: boolean
+          id?: string
+          kind?: string
+        }
+        Relationships: []
+      }
       change_order: {
         Row: {
           amount: number
@@ -322,6 +346,72 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "invoice_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "project"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      lead: {
+        Row: {
+          address: string | null
+          appointment_at: string | null
+          client_company_id: string | null
+          created_at: string
+          email: string | null
+          follow_up_on: string | null
+          id: string
+          name: string
+          notes: string | null
+          phone: string | null
+          project_id: string | null
+          source: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          address?: string | null
+          appointment_at?: string | null
+          client_company_id?: string | null
+          created_at?: string
+          email?: string | null
+          follow_up_on?: string | null
+          id?: string
+          name: string
+          notes?: string | null
+          phone?: string | null
+          project_id?: string | null
+          source?: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          address?: string | null
+          appointment_at?: string | null
+          client_company_id?: string | null
+          created_at?: string
+          email?: string | null
+          follow_up_on?: string | null
+          id?: string
+          name?: string
+          notes?: string | null
+          phone?: string | null
+          project_id?: string | null
+          source?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lead_client_company_id_fkey"
+            columns: ["client_company_id"]
+            isOneToOne: false
+            referencedRelation: "client_company"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lead_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "project"
@@ -639,35 +729,50 @@ export type Database = {
       wa_message: {
         Row: {
           body: string
+          channel: string
           created_at: string
           direction: string
           from_name: string | null
           from_phone: string | null
           group_external_id: string | null
           id: string
+          important: boolean
           project_id: string | null
+          read_at: string | null
+          status: string
+          to_phone: string | null
           wamid: string | null
         }
         Insert: {
           body: string
+          channel?: string
           created_at?: string
           direction?: string
           from_name?: string | null
           from_phone?: string | null
           group_external_id?: string | null
           id?: string
+          important?: boolean
           project_id?: string | null
+          read_at?: string | null
+          status?: string
+          to_phone?: string | null
           wamid?: string | null
         }
         Update: {
           body?: string
+          channel?: string
           created_at?: string
           direction?: string
           from_name?: string | null
           from_phone?: string | null
           group_external_id?: string | null
           id?: string
+          important?: boolean
           project_id?: string | null
+          read_at?: string | null
+          status?: string
+          to_phone?: string | null
           wamid?: string | null
         }
         Relationships: [
@@ -685,6 +790,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      is_demo: { Args: never; Returns: boolean }
       is_staff: { Args: never; Returns: boolean }
       portal_get_job: { Args: { p_token: string }; Returns: Json }
       portal_get_price: { Args: { p_token: string }; Returns: Json }

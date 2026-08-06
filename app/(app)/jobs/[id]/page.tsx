@@ -11,6 +11,7 @@ import { nextStep } from "@/lib/next-step";
 import { logActivity } from "@/lib/activity";
 import { buildInvoicePdf } from "@/lib/invoice-pdf";
 import { waCreateGroup, waSendToGroup, waStatus } from "@/lib/actions/whatsapp";
+import { ChatThread } from "@/components/comms";
 import type { Database } from "@/lib/database.types";
 
 type DB = Database["public"]["Tables"];
@@ -28,7 +29,7 @@ type Company = { id: string; name: string };
 type Rep = { id: string; name: string; client_company_id: string; phone: string | null };
 type Partner = { id: string; name: string; kind: string };
 
-const TABS = ["Overview", "Money", "Change orders", "Documents", "Activity"] as const;
+const TABS = ["Overview", "Money", "Change orders", "Communications", "Documents", "Activity"] as const;
 type Tab = (typeof TABS)[number];
 
 /**
@@ -93,12 +94,13 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [waOn, setWaOn] = useState(false);
   const [rating, setRating] = useState(false);
   const [tab, setTab] = useState<Tab>("Overview");
+  const [unreadMsgs, setUnreadMsgs] = useState(0);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [flash, setFlash] = useState("");
 
   const reload = useCallback(async () => {
-    const [p, ev, inv, ex, co, dc, pr, comp, rep, part, pay, act, orgRow] = await Promise.all([
+    const [p, ev, inv, ex, co, dc, pr, comp, rep, part, pay, act, orgRow, msgMeta] = await Promise.all([
       supabase.from("project").select("*").eq("id", id).maybeSingle(),
       supabase.from("event").select("*, partner(name)").eq("project_id", id).order("date"),
       supabase.from("invoice").select("*").eq("project_id", id).order("created_at"),
@@ -112,6 +114,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       supabase.from("payment").select("*").eq("project_id", id).order("paid_on"),
       supabase.from("activity").select("*").eq("project_id", id).order("created_at", { ascending: false }).limit(200),
       supabase.from("org_setting").select("*").maybeSingle(),
+      supabase.from("wa_message").select("id").eq("project_id", id).eq("direction", "in").is("read_at", null),
     ]);
     setProject((p.data as Project) ?? null);
     setEvents((ev.data as Event[]) ?? []);
@@ -126,6 +129,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     setPayments(pay.data ?? []);
     setActs(act.data ?? []);
     setOrg(orgRow.data ?? null);
+    setUnreadMsgs(msgMeta.data?.length ?? 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -255,6 +259,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               {t === "Change orders" && cos.some((c) => c.status === "pending") ? (
                 <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-brand-500 align-middle" />
               ) : null}
+              {t === "Communications" && unreadMsgs > 0 ? (
+                <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-red-500 align-middle" />
+              ) : null}
             </button>
           ))}
         </nav>
@@ -297,6 +304,24 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         ) : null}
         {tab === "Change orders" ? (
           <ChangeOrdersTab projectId={project.id} cos={cos} reload={reload} />
+        ) : null}
+        {tab === "Communications" ? (
+          <div className="card overflow-hidden">
+            <ChatThread
+              projectId={project.id}
+              toPhone={rep?.phone ?? null}
+              toName={rep?.name ?? null}
+              onChanged={() => {
+                supabase
+                  .from("wa_message")
+                  .select("id")
+                  .eq("project_id", project.id)
+                  .eq("direction", "in")
+                  .is("read_at", null)
+                  .then(({ data }) => setUnreadMsgs(data?.length ?? 0));
+              }}
+            />
+          </div>
         ) : null}
         {tab === "Documents" ? (
           <DocumentsTab project={project} docs={docs} reload={reload} note={note} />

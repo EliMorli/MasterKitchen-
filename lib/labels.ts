@@ -67,9 +67,41 @@ export const PARTNER_KINDS = [
   "crew",
   "cabinet vendor",
   "countertop vendor",
+  "cabinet & countertop vendor",
   "designer",
   "other",
 ];
+
+/**
+ * The lead funnel, in order. Same shape as PHASES so the Lead Board can be
+ * the same kind of kanban as Jobs. Won/lost are terminal.
+ */
+export const LEAD_STAGES: { key: string; label: string; dot: string; column: string }[] = [
+  { key: "new",         label: "New",         dot: "bg-ink-400",     column: "border-ink-300" },
+  { key: "contacted",   label: "Contacted",   dot: "bg-sky-500",     column: "border-sky-300" },
+  { key: "appointment", label: "Appointment", dot: "bg-violet-500",  column: "border-violet-300" },
+  { key: "follow_up",   label: "Follow-up",   dot: "bg-brand-500",   column: "border-brand-400" },
+  { key: "won",         label: "Won",         dot: "bg-emerald-500", column: "border-emerald-300" },
+  { key: "lost",        label: "Lost",        dot: "bg-ink-700",     column: "border-ink-400" },
+];
+
+export const LEAD_SOURCES = [
+  "referral",
+  "gc",
+  "website",
+  "social",
+  "walk_in",
+  "other",
+];
+
+export const LEAD_SOURCE_LABEL: Record<string, string> = {
+  referral: "Referral",
+  gc: "GC",
+  website: "Website",
+  social: "Social",
+  walk_in: "Walk-in",
+  other: "Other",
+};
 
 /** Common calendar entries, offered as quick picks — free text always allowed. */
 export const EVENT_PRESETS = [

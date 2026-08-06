@@ -1,14 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { Field, Topbar } from "@/components/ui";
+import { Field, Modal, Topbar } from "@/components/ui";
 import { waStatus } from "@/lib/actions/whatsapp";
+import { AUTOMATION_CATALOG } from "@/lib/automations";
 import { grossMarginPct, num, priceFromMarkup } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
 type Org = Database["public"]["Tables"]["org_setting"]["Row"];
 type User = Database["public"]["Tables"]["user_account"]["Row"];
+type Automation = Database["public"]["Tables"]["automation"]["Row"];
 
 export default function SettingsPage() {
   const supabase = createClient();
@@ -193,7 +196,10 @@ export default function SettingsPage() {
           ) : null}
         </div>
 
-        {!demo ? (
+        <div className="space-y-5">
+          <AutomationsCard demo={demo} />
+
+          {!demo ? (
           <section className="card-pad space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="h2">WhatsApp (Meta Cloud API)</h2>
@@ -219,8 +225,133 @@ export default function SettingsPage() {
               </Field>
             ) : null}
           </section>
-        ) : null}
+          ) : null}
+        </div>
       </div>
     </>
+  );
+}
+
+/**
+ * Which of the built-in automations are switched on. The catalog lives in
+ * lib/automations.ts; this card just stores the choices. Message-sending ones
+ * fire through the messaging connection once it's live.
+ */
+function AutomationsCard({ demo }: { demo: boolean }) {
+  const supabase = createClient();
+  const [rows, setRows] = useState<Automation[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  async function load() {
+    const { data } = await supabase.from("automation").select("*").order("created_at");
+    setRows((data as Automation[]) ?? []);
+    setLoading(false);
+  }
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function toggle(a: Automation) {
+    if (demo) return;
+    setRows((prev) => prev.map((r) => (r.id === a.id ? { ...r, enabled: !a.enabled } : r)));
+    await supabase.from("automation").update({ enabled: !a.enabled }).eq("id", a.id);
+  }
+
+  async function add(kind: string) {
+    if (demo) return;
+    await supabase.from("automation").insert({ kind, enabled: true });
+    setAdding(false);
+    await load();
+  }
+
+  async function remove(a: Automation) {
+    if (demo) return;
+    await supabase.from("automation").delete().eq("id", a.id);
+    await load();
+  }
+
+  const available = AUTOMATION_CATALOG.filter((d) => !rows.some((r) => r.kind === d.kind));
+
+  return (
+    <section className="card-pad space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="h2">Automations</h2>
+        {!demo && available.length ? (
+          <button onClick={() => setAdding(true)} className="btn-ghost text-brand-700">
+            <Plus size={15} /> Add automation
+          </button>
+        ) : null}
+      </div>
+
+      {loading ? (
+        <p className="muted">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="muted text-sm">
+          Nothing running yet. Add one — the built-in set starts with invoicing: drafting the
+          final invoice, payment follow-ups, overdue chasing.
+        </p>
+      ) : (
+        <ul className="divide-y divide-ink-100">
+          {rows.map((a) => {
+            const def = AUTOMATION_CATALOG.find((d) => d.kind === a.kind);
+            return (
+              <li key={a.id} className="flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-ink-900">{def?.name ?? a.kind}</p>
+                  {def ? <p className="muted mt-0.5 text-xs">{def.description}</p> : null}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    role="switch"
+                    aria-checked={a.enabled}
+                    onClick={() => toggle(a)}
+                    disabled={demo}
+                    className={`relative h-5.5 w-10 rounded-full transition-colors disabled:opacity-50 ${
+                      a.enabled ? "bg-emerald-500" : "bg-ink-300"
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow transition-all ${
+                        a.enabled ? "left-5" : "left-0.5"
+                      }`}
+                    />
+                  </button>
+                  {!demo ? (
+                    <button
+                      onClick={() => remove(a)}
+                      className="text-xs font-medium text-ink-400 hover:text-red-600"
+                    >
+                      Remove
+                    </button>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <p className="muted text-xs">
+        Automations that send messages go out through the WhatsApp connection — and Twilio SMS
+        once it&apos;s hooked up.
+      </p>
+
+      {adding ? (
+        <Modal title="Add automation" onClose={() => setAdding(false)}>
+          <ul className="divide-y divide-ink-100">
+            {available.map((d) => (
+              <li key={d.kind} className="py-3 first:pt-0 last:pb-0">
+                <button onClick={() => add(d.kind)} className="w-full text-left hover:opacity-80">
+                  <p className="text-sm font-semibold text-ink-900">{d.name}</p>
+                  <p className="muted mt-0.5 text-xs">{d.description}</p>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Modal>
+      ) : null}
+    </section>
   );
 }

@@ -3,6 +3,8 @@ import {
   Gauge,
   CalendarDays,
   Hammer,
+  Target,
+  MessagesSquare,
   Wallet,
   FolderOpen,
   Building2,
@@ -30,6 +32,8 @@ export const NAV_GROUPS: { heading: string; items: NavItem[] }[] = [
     heading: "Work",
     items: [
       { href: "/jobs", label: "Jobs", icon: Hammer },
+      { href: "/leads", label: "Leads", icon: Target },
+      { href: "/communications", label: "Communications", icon: MessagesSquare },
       { href: "/money", label: "Cashflow", icon: Wallet },
       { href: "/documents", label: "Documents", icon: FolderOpen },
     ],

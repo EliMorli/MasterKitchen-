@@ -299,6 +299,37 @@ try {
   await page.goto(`${BASE}/documents`, { waitUntil: "networkidle" });
   check("documents grouped by job", await see(page, "Updated"));
 
+  // Leads: board renders, a lead round-trips (create → shows → delete)
+  await page.goto(`${BASE}/leads`, { waitUntil: "networkidle" });
+  check("lead board renders", await see(page, "Contacted"));
+  await page.click('button:has-text("New lead")');
+  await page.locator(".fixed input.input").first().fill("E2E Test Lead");
+  await page.click('.fixed button:has-text("Save")');
+  await page.waitForTimeout(800);
+  check("lead created", await see(page, "E2E Test Lead"));
+  await page.click("text=E2E Test Lead");
+  await page.click('.fixed button:has-text("Delete")');
+  await page.waitForTimeout(800);
+
+  // Communications: attention board + thread list render
+  await page.goto(`${BASE}/communications`, { waitUntil: "networkidle" });
+  check("communications renders", await see(page, "Communications"));
+
+  // Job page: Communications tab with the chat window
+  await page.goto(projectUrl, { waitUntil: "networkidle" });
+  await page.click('button:has-text("Communications")');
+  check("job comms tab renders", await see(page, "Send"));
+
+  // Settings: automations card + add/toggle/remove round-trip
+  await page.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+  check("settings automations card", await see(page, "Automations"));
+  await page.click('button:has-text("Add automation")');
+  await page.click('.fixed button:has-text("Draft the final invoice")');
+  await page.waitForTimeout(800);
+  check("automation added", await see(page, "Draft the final invoice when a job completes"));
+  await page.click('button:has-text("Remove")');
+  await page.waitForTimeout(600);
+
   // Dashboard + calendar render
   await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
   check("dashboard renders", await see(page, "The board"));
