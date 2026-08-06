@@ -262,8 +262,9 @@ const PHASE_INDEX: Record<Phase, number> = Object.fromEntries(
 
 /**
  * The same board, flattened to a table for people who scan faster than they
- * drag. Phase is an inline dropdown — changing it runs the same `moveTo` a drop
- * does, so the two views stay in lockstep. Next step reuses the board's logic.
+ * drag — grouped under the same column headers, in the same order, so the eye
+ * can review stage by stage. Phase is an inline dropdown — changing it runs
+ * the same `moveTo` a drop does, so the two views stay in lockstep.
  */
 function JobsList({
   projects,
@@ -276,16 +277,18 @@ function JobsList({
   loading: boolean;
   onMove: (id: string, phase: Phase) => void;
 }) {
-  const rows = useMemo(
+  const groups = useMemo(
     () =>
-      [...projects].sort(
-        (a, b) =>
-          PHASE_INDEX[a.phase] - PHASE_INDEX[b.phase] || a.address.localeCompare(b.address),
-      ),
+      PHASES.map((ph) => ({
+        ph,
+        rows: projects
+          .filter((p) => p.phase === ph.key)
+          .sort((a, b) => a.address.localeCompare(b.address)),
+      })).filter((g) => g.rows.length > 0),
     [projects],
   );
 
-  if (rows.length === 0) {
+  if (groups.length === 0) {
     return (
       <div className="card">
         <Empty title={loading ? "Loading…" : "No active jobs"} hint="Start one with New job." />
@@ -295,7 +298,19 @@ function JobsList({
 
   return (
     <Table head={["Job", "Client · Rep", "Phase", "Next step", "Price", "Code"]} minWidth={760}>
-      {rows.map((p) => {
+      {groups.map(({ ph, rows }) => [
+        <tr key={`head-${ph.key}`} className="bg-ink-50/80">
+          <td colSpan={6} className={`border-l-4 px-4 py-1.5 ${ph.column}`}>
+            <span className="flex items-center gap-2">
+              <span className={`h-2 w-2 rounded-full ${ph.dot}`} />
+              <span className="text-xs font-semibold uppercase tracking-wide text-ink-700">
+                {ph.label}
+              </span>
+              <span className="nums text-xs font-semibold text-ink-400">{rows.length}</span>
+            </span>
+          </td>
+        </tr>,
+        ...rows.map((p) => {
         const step = nextStep(
           p,
           children_.events.filter((e) => e.project_id === p.id) as never,
@@ -356,7 +371,8 @@ function JobsList({
             <td className="td nums text-ink-500">{p.code}</td>
           </tr>
         );
-      })}
+        }),
+      ])}
     </Table>
   );
 }
