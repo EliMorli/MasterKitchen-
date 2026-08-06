@@ -1,24 +1,42 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Plus } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { ChevronDown, ChevronRight, Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { Empty, Field, Modal, Table, Topbar } from "@/components/ui";
-import { PARTNER_KINDS } from "@/lib/labels";
+import { Badge, Empty, Field, Modal, Table, Topbar } from "@/components/ui";
+import { PARTNER_KINDS, PHASE_LABEL, PHASE_TONE, type Phase } from "@/lib/labels";
+import { money } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
 type Partner = Database["public"]["Tables"]["partner"]["Row"];
+type ActiveJob = { id: string; address: string; phase: Phase; price: number | null; crew_id: string | null };
 
-/** Everyone who prices work or does it. Click a row to edit. */
+/**
+ * Everyone who prices work or does it. Click a row to see what they're on
+ * right now — who to keep busy is the question this table answers. Edit opens
+ * the full card.
+ */
 export default function PartnersPage() {
   const supabase = createClient();
   const [partners, setPartners] = useState<Partner[]>([]);
+  const [activeJobs, setActiveJobs] = useState<ActiveJob[]>([]);
   const [modal, setModal] = useState<Partner | "new" | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from("partner").select("*").order("kind").order("name");
-    setPartners(data ?? []);
+    const [p, j] = await Promise.all([
+      supabase.from("partner").select("*").order("kind").order("name"),
+      supabase
+        .from("project")
+        .select("id, address, phase, price, crew_id")
+        .eq("archived", false)
+        .neq("phase", "paid")
+        .not("crew_id", "is", null),
+    ]);
+    setPartners(p.data ?? []);
+    setActiveJobs((j.data as ActiveJob[]) ?? []);
     setLoading(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -26,6 +44,17 @@ export default function PartnersPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const jobsByCrew = useMemo(() => {
+    const m = new Map<string, ActiveJob[]>();
+    for (const j of activeJobs) {
+      if (!j.crew_id) continue;
+      const arr = m.get(j.crew_id) ?? [];
+      arr.push(j);
+      m.set(j.crew_id, arr);
+    }
+    return m;
+  }, [activeJobs]);
 
   return (
     <>
@@ -43,15 +72,80 @@ export default function PartnersPage() {
           <Empty title={loading ? "Loading…" : "Nobody here yet"} />
         </div>
       ) : (
-        <Table head={["Name", "Type", "Phone", "Area"]}>
-          {partners.map((p) => (
-            <tr key={p.id} onClick={() => setModal(p)} className="cursor-pointer hover:bg-ink-50">
-              <td className="td font-semibold">{p.name}</td>
-              <td className="td capitalize text-ink-600">{p.kind}</td>
-              <td className="td nums text-ink-600">{p.phone ?? "—"}</td>
-              <td className="td text-ink-600">{p.area ?? "—"}</td>
-            </tr>
-          ))}
+        <Table head={["Name", "Type", "Phone", "Area", "On now", ""]}>
+          {partners.map((p) => {
+            const jobs = jobsByCrew.get(p.id) ?? [];
+            const open = expanded === p.id;
+            return [
+              <tr
+                key={p.id}
+                onClick={() => setExpanded(open ? null : p.id)}
+                className="cursor-pointer hover:bg-ink-50"
+              >
+                <td className="td font-semibold">
+                  <span className="flex items-center gap-1.5">
+                    {open ? (
+                      <ChevronDown size={14} className="shrink-0 text-ink-400" />
+                    ) : (
+                      <ChevronRight size={14} className="shrink-0 text-ink-400" />
+                    )}
+                    {p.name}
+                  </span>
+                </td>
+                <td className="td capitalize text-ink-600">{p.kind}</td>
+                <td className="td nums text-ink-600">{p.phone ?? "—"}</td>
+                <td className="td text-ink-600">{p.area ?? "—"}</td>
+                <td className="td">
+                  {jobs.length ? (
+                    <Badge tone="bg-emerald-100 text-emerald-800">
+                      {jobs.length} job{jobs.length === 1 ? "" : "s"}
+                    </Badge>
+                  ) : (
+                    <span className="text-xs text-ink-400">free</span>
+                  )}
+                </td>
+                <td className="td text-right">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setModal(p);
+                    }}
+                    className="text-xs font-semibold text-ink-400 hover:text-ink-800"
+                  >
+                    Edit
+                  </button>
+                </td>
+              </tr>,
+              open ? (
+                <tr key={`${p.id}-jobs`}>
+                  <td colSpan={6} className="bg-ink-50/60 px-5 py-3">
+                    {jobs.length ? (
+                      <ul className="space-y-1.5">
+                        {jobs.map((j) => (
+                          <li key={j.id} className="flex items-center justify-between gap-2 text-sm">
+                            <Link
+                              href={`/jobs/${j.id}`}
+                              className="font-medium text-ink-800 hover:text-brand-700"
+                            >
+                              {j.address}
+                            </Link>
+                            <span className="flex items-center gap-2">
+                              <Badge tone={PHASE_TONE[j.phase]}>{PHASE_LABEL[j.phase]}</Badge>
+                              <span className="nums text-xs text-ink-500">{money(j.price)}</span>
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="muted text-xs">
+                        Nothing on the board right now — free for the next job.
+                      </p>
+                    )}
+                  </td>
+                </tr>
+              ) : null,
+            ];
+          })}
         </Table>
       )}
 

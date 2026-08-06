@@ -10,6 +10,7 @@ import { PHASES, PHASE_LABEL, type Phase } from "@/lib/labels";
 import { nextStep } from "@/lib/next-step";
 import { logActivity } from "@/lib/activity";
 import { money } from "@/lib/format";
+import { AddRepModal } from "@/components/add-rep";
 import type { Database } from "@/lib/database.types";
 
 type Project = Database["public"]["Tables"]["project"]["Row"] & {
@@ -219,7 +220,6 @@ export default function JobsPage() {
         <NewJobModal
           companies={companies}
           reps={reps}
-          nextCode={nextCode(projects)}
           onClose={() => setCreating(false)}
           onCreated={(id) => router.push(`/jobs/${id}`)}
         />
@@ -361,27 +361,15 @@ function JobsList({
   );
 }
 
-function nextCode(projects: Project[]): string {
-  const year = new Date().getFullYear();
-  const max = projects.reduce((m, p) => {
-    const match = p.code?.match(/(\d+)$/);
-    const n = match ? parseInt(match[1], 10) : 0;
-    return n > m ? n : m;
-  }, 0);
-  return `MK-${year}-${String(max + 1).padStart(4, "0")}`;
-}
-
 /** Intake is one WhatsApp message: address, client, rep. Thirty seconds, done. */
 function NewJobModal({
   companies,
   reps,
-  nextCode,
   onClose,
   onCreated,
 }: {
   companies: Company[];
   reps: Rep[];
-  nextCode: string;
   onClose: () => void;
   onCreated: (id: string) => void;
 }) {
@@ -392,8 +380,11 @@ function NewJobModal({
   const [contactId, setContactId] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Local copy so a rep added inline shows up without a page reload.
+  const [allReps, setAllReps] = useState<Rep[]>(reps);
+  const [addingRep, setAddingRep] = useState(false);
 
-  const companyReps = reps.filter((r) => r.client_company_id === companyId);
+  const companyReps = allReps.filter((r) => r.client_company_id === companyId);
 
   async function create() {
     if (!address.trim()) {
@@ -484,24 +475,45 @@ function NewJobModal({
         </Field>
         {companyId ? (
           <Field label="Sales rep">
-            <select
-              value={contactId}
-              onChange={(e) => setContactId(e.target.value)}
-              className="input"
-            >
-              <option value="">Choose…</option>
-              {companyReps.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
+            <div className="flex gap-2">
+              <select
+                value={contactId}
+                onChange={(e) => setContactId(e.target.value)}
+                className="input"
+              >
+                <option value="">Choose…</option>
+                {companyReps.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => setAddingRep(true)}
+                className="shrink-0 rounded-md px-2 text-xs font-semibold text-brand-700 hover:bg-brand-50"
+                title="Add a rep to this client"
+              >
+                + New
+              </button>
+            </div>
           </Field>
         ) : null}
         {error ? (
           <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
         ) : null}
       </div>
+      {addingRep && companyId ? (
+        <AddRepModal
+          companyId={companyId}
+          companyName={companies.find((c) => c.id === companyId)?.name ?? null}
+          onClose={() => setAddingRep(false)}
+          onCreated={(r) => {
+            setAddingRep(false);
+            setAllReps((prev) => [...prev, r].sort((a, b) => a.name.localeCompare(b.name)));
+            setContactId(r.id);
+          }}
+        />
+      ) : null}
     </Modal>
   );
 }

@@ -182,12 +182,18 @@ try {
   await page.waitForTimeout(1500);
   check("invoice edited", await see(page, "$16,000"));
 
-  // Record a partial payment, then the rest — status derives itself.
+  // Record a partial payment (with a proof file attached), then the rest —
+  // status derives itself and the proof link shows on the payment row.
   await page.click("text=/MK-2026-\\d+-01/");
   await page.locator('.fixed input[placeholder="0.00"]').fill("6000");
+  await page.locator('.fixed input[type="file"]').setInputFiles(DESIGN);
   await page.click('.fixed button:has-text("Record payment")');
   await page.waitForTimeout(1500);
   check("partial payment recorded", await see(page, "partial"));
+  await page.click("text=/MK-2026-\\d+-01/");
+  check("payment proof attached", await see(page, "proof"));
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
   await page.click("text=/MK-2026-\\d+-01/");
   await page.locator('.fixed input[placeholder="0.00"]').fill("10000");
   await page.click('.fixed button:has-text("Record payment")');
@@ -311,9 +317,14 @@ try {
   await page.click('.fixed button:has-text("Delete")');
   await page.waitForTimeout(800);
 
-  // Communications: attention board + thread list render
+  // Communications: attention board + thread list render, new-message entry
   await page.goto(`${BASE}/communications`, { waitUntil: "networkidle" });
   check("communications renders", await see(page, "Communications"));
+  check("communications new message button", await see(page, "New message"));
+
+  // Partners: workload column
+  await page.goto(`${BASE}/partners`, { waitUntil: "networkidle" });
+  check("partners on-now column", await see(page, "On now"));
 
   // Job page: Communications tab with the chat window
   await page.goto(projectUrl, { waitUntil: "networkidle" });

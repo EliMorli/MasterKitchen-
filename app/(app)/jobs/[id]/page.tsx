@@ -2,7 +2,7 @@
 
 import { use, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, Circle, Copy, ExternalLink, Plus, Trash2 } from "lucide-react";
+import { CheckCircle2, Circle, Copy, ExternalLink, Paperclip, Plus, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Badge, Empty, Field, Modal } from "@/components/ui";
 import { CO_TONE, DOC_TAGS, EVENT_PRESETS, PHASES, TRADES, type Phase } from "@/lib/labels";
@@ -12,6 +12,7 @@ import { logActivity } from "@/lib/activity";
 import { buildInvoicePdf } from "@/lib/invoice-pdf";
 import { waCreateGroup, waSendToGroup, waStatus } from "@/lib/actions/whatsapp";
 import { ChatThread } from "@/components/comms";
+import { AddRepModal } from "@/components/add-rep";
 import type { Database } from "@/lib/database.types";
 
 type DB = Database["public"]["Tables"];
@@ -285,6 +286,10 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             reload={reload}
             note={note}
             onUseCost={(amount) => patch({ cost: amount })}
+            onRepCreated={(r) => {
+              setReps((prev) => [...prev, r].sort((a, b) => a.name.localeCompare(b.name)));
+              patch({ contact_id: r.id });
+            }}
           />
         ) : null}
         {tab === "Money" ? (
@@ -426,6 +431,7 @@ function OverviewTab({
   reload,
   note,
   onUseCost,
+  onRepCreated,
 }: {
   project: Project;
   waOn: boolean;
@@ -442,10 +448,12 @@ function OverviewTab({
   reload: () => Promise<void>;
   note: (t: string) => void;
   onUseCost: (amount: number) => void;
+  onRepCreated: (r: Rep) => void;
 }) {
   const supabase = createClient();
   const [addingEvent, setAddingEvent] = useState(false);
   const [asking, setAsking] = useState(false);
+  const [addingRep, setAddingRep] = useState(false);
 
   async function copy(text: string, then?: string | null) {
     await navigator.clipboard.writeText(text);
@@ -556,18 +564,29 @@ function OverviewTab({
             </select>
           </Field>
           <Field label="Sales rep">
-            <select
-              value={project.contact_id ?? ""}
-              onChange={(e) => patch({ contact_id: e.target.value || null })}
-              className="input"
-            >
-              <option value="">—</option>
-              {companyReps.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
+            <div className="flex gap-2">
+              <select
+                value={project.contact_id ?? ""}
+                onChange={(e) => patch({ contact_id: e.target.value || null })}
+                className="input"
+              >
+                <option value="">—</option>
+                {companyReps.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+              {project.client_company_id ? (
+                <button
+                  onClick={() => setAddingRep(true)}
+                  className="shrink-0 rounded-md px-2 text-xs font-semibold text-brand-700 hover:bg-brand-50"
+                  title="Add a rep to this client"
+                >
+                  + New
+                </button>
+              ) : null}
+            </div>
           </Field>
           <Field label="Crew">
             <select
@@ -851,6 +870,18 @@ function OverviewTab({
           onSaved={() => {
             setAsking(false);
             reload();
+          }}
+        />
+      ) : null}
+      {addingRep && project.client_company_id ? (
+        <AddRepModal
+          companyId={project.client_company_id}
+          companyName={companies.find((c) => c.id === project.client_company_id)?.name ?? null}
+          onClose={() => setAddingRep(false)}
+          onCreated={(r) => {
+            setAddingRep(false);
+            onRepCreated(r);
+            note(`${r.name} added — remember to save`);
           }}
         />
       ) : null}
@@ -1334,6 +1365,7 @@ function InvoiceModal({
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<Payment["method"]>("check");
   const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
+  const [payProof, setPayProof] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
@@ -1492,27 +1524,60 @@ function InvoiceModal({
     if (!Number.isFinite(amount) || amount <= 0) return;
     setBusy(true);
 
-    await supabase.from("payment").insert({
-      invoice_id: invoice.id,
-      project_id: project.id,
-      amount,
-      method: payMethod,
-      paid_on: payDate,
-    });
+    const { data: created } = await supabase
+      .from("payment")
+      .insert({
+        invoice_id: invoice.id,
+        project_id: project.id,
+        amount,
+        method: payMethod,
+        paid_on: payDate,
+      })
+      .select("id")
+      .single();
+
+    // The check photo (or Zelle screenshot) rides with the payment record.
+    if (created && payProof) {
+      const safe = payProof.name.replace(/[^\w.\-]+/g, "_");
+      const path = `${project.id}/payment-proofs/${created.id}-${safe}`;
+      const { error: upErr } = await supabase.storage
+        .from("documents")
+        .upload(path, payProof, { upsert: true });
+      if (upErr) {
+        alert(`The payment saved, but the proof could not be uploaded: ${upErr.message}`);
+      } else {
+        await supabase
+          .from("payment")
+          .update({ proof_path: path, proof_name: payProof.name })
+          .eq("id", created.id);
+      }
+    }
+
     logActivity(supabase, project.id, "payment",
-      `Payment recorded on ${invoice.number}: ${moneyExact(amount)} (${payMethod})`);
+      `Payment recorded on ${invoice.number}: ${moneyExact(amount)} (${payMethod})${payProof ? " — proof attached" : ""}`);
 
     // Status + PDF derive from the DB against the STORED amount — never the
     // possibly-unsaved form value.
     await syncStored(invoice);
 
     setPayAmount("");
+    setPayProof(null);
     setBusy(false);
     onSaved();
   }
 
+  async function openProof(pm: Payment) {
+    if (!pm.proof_path) return;
+    const { data } = await supabase.storage
+      .from("documents")
+      .createSignedUrl(pm.proof_path, 600);
+    if (data?.signedUrl) window.open(data.signedUrl, "_blank", "noopener");
+  }
+
   async function removePayment(payId: string, amount: number) {
     if (!invoice) return;
+    const proof = payments.find((p) => p.id === payId)?.proof_path;
+    if (proof) await supabase.storage.from("documents").remove([proof]);
     await supabase.from("payment").delete().eq("id", payId);
     logActivity(supabase, project.id, "payment",
       `Payment removed from ${invoice.number}: ${moneyExact(amount)}`);
@@ -1639,6 +1704,15 @@ function InvoiceModal({
                   <span>
                     <span className="nums font-semibold">{moneyExact(pm.amount)}</span>
                     <span className="muted"> · {pm.method} · {shortDate(pm.paid_on)}</span>
+                    {pm.proof_path ? (
+                      <button
+                        onClick={() => openProof(pm)}
+                        className="ml-2 inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:text-brand-600"
+                        title={pm.proof_name ?? "Proof of payment"}
+                      >
+                        <Paperclip size={12} /> proof
+                      </button>
+                    ) : null}
                   </span>
                   <button
                     onClick={() => removePayment(pm.id, num(pm.amount))}
@@ -1683,6 +1757,15 @@ function InvoiceModal({
             <div>
               <label className="label">When</label>
               <input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} className="input w-auto" />
+            </div>
+            <div className="min-w-40 flex-1">
+              <label className="label">Proof (check photo, screenshot…)</label>
+              <input
+                type="file"
+                accept="image/*,.pdf"
+                onChange={(e) => setPayProof(e.target.files?.[0] ?? null)}
+                className="block w-full text-xs text-ink-600 file:mr-2 file:rounded-md file:border-0 file:bg-ink-100 file:px-2.5 file:py-1.5 file:text-xs file:font-medium file:text-ink-700 hover:file:bg-ink-200"
+              />
             </div>
             <button onClick={recordPayment} disabled={busy || !payAmount} className="btn-primary">
               {busy ? "Recording…" : "Record payment"}

@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { Badge, Empty, Topbar } from "@/components/ui";
+import { Badge, Empty, Field, Modal, Topbar } from "@/components/ui";
 import { ChatThread, type Msg } from "@/components/comms";
 import { dateTime } from "@/lib/format";
 
@@ -33,6 +34,8 @@ export default function CommunicationsPage() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [projects, setProjects] = useState<Proj[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [composing, setComposing] = useState(false);
+  const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -86,9 +89,23 @@ export default function CommunicationsPage() {
     );
   }, [msgs, projects]);
 
-  const attention = threads.filter((t) => t.unread > 0 || t.important > 0);
+  // Search cuts across everything a thread is about: address, client, rep,
+  // and what was last said.
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return threads;
+    return threads.filter((t) =>
+      [t.project.address, t.project.client_company?.name, t.project.contact?.name, t.last?.body]
+        .filter(Boolean)
+        .some((s) => s!.toLowerCase().includes(needle)),
+    );
+  }, [threads, q]);
+
+  const attention = shown.filter((t) => t.unread > 0 || t.important > 0);
   const unrouted = msgs.filter((m) => !m.project_id);
-  const open = threads.find((t) => t.project.id === openId) ?? null;
+  // Any job can be opened — including one with no messages yet (that's what
+  // "New message" does); its stats simply don't exist yet.
+  const openProject = projects.find((p) => p.id === openId) ?? null;
 
   return (
     <>
@@ -101,9 +118,14 @@ export default function CommunicationsPage() {
               ? `${attention.length} thread${attention.length === 1 ? "" : "s"} need attention`
               : "All caught up"
         }
+        action={
+          <button onClick={() => setComposing(true)} className="btn-brand">
+            <Plus size={16} /> New message
+          </button>
+        }
       />
 
-      {!loading && threads.length === 0 && unrouted.length === 0 ? (
+      {!loading && threads.length === 0 && unrouted.length === 0 && !openId ? (
         <div className="card">
           <Empty
             title="No conversations yet"
@@ -113,6 +135,13 @@ export default function CommunicationsPage() {
       ) : (
         <div className="grid gap-4 lg:grid-cols-[minmax(18rem,26rem)_1fr]">
           <div className="space-y-4">
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              className="input"
+              placeholder="Search by job, client, rep or message…"
+            />
+
             {attention.length ? (
               <section>
                 <h2 className="h2 mb-2 text-red-600">Needs attention</h2>
@@ -126,13 +155,13 @@ export default function CommunicationsPage() {
 
             <section>
               <h2 className="h2 mb-2">All threads</h2>
-              {threads.length === 0 ? (
+              {shown.length === 0 ? (
                 <div className="card">
-                  <Empty title="No job threads yet" />
+                  <Empty title={q ? "No matches" : "No job threads yet"} />
                 </div>
               ) : (
                 <ul className="card divide-y divide-ink-100">
-                  {threads.map((t) => (
+                  {shown.map((t) => (
                     <ThreadRow key={t.project.id} t={t} active={openId === t.project.id} onOpen={setOpenId} />
                   ))}
                 </ul>
@@ -157,31 +186,31 @@ export default function CommunicationsPage() {
           </div>
 
           <div className="card overflow-hidden">
-            {open ? (
+            {openProject ? (
               <>
                 <header className="flex items-center justify-between border-b border-ink-200 px-4 py-3">
                   <div className="min-w-0">
                     <Link
-                      href={`/jobs/${open.project.id}`}
+                      href={`/jobs/${openProject.id}`}
                       className="truncate text-sm font-semibold text-ink-900 hover:text-brand-700"
                     >
-                      {open.project.address}
+                      {openProject.address}
                     </Link>
                     <p className="muted text-xs">
-                      {[open.project.client_company?.name, open.project.contact?.name]
+                      {[openProject.client_company?.name, openProject.contact?.name]
                         .filter(Boolean)
                         .join(" · ") || "No client on the job"}
                     </p>
                   </div>
-                  <Link href={`/jobs/${open.project.id}`} className="text-xs font-medium text-ink-400 hover:text-ink-700">
+                  <Link href={`/jobs/${openProject.id}`} className="text-xs font-medium text-ink-400 hover:text-ink-700">
                     Open job →
                   </Link>
                 </header>
                 <ChatThread
-                  key={open.project.id}
-                  projectId={open.project.id}
-                  toPhone={open.project.contact?.phone ?? null}
-                  toName={open.project.contact?.name ?? null}
+                  key={openProject.id}
+                  projectId={openProject.id}
+                  toPhone={openProject.contact?.phone ?? null}
+                  toName={openProject.contact?.name ?? null}
                   onChanged={load}
                 />
               </>
@@ -191,7 +220,100 @@ export default function CommunicationsPage() {
           </div>
         </div>
       )}
+
+      {composing ? (
+        <NewMessageModal
+          projects={projects}
+          onClose={() => setComposing(false)}
+          onPick={(id) => {
+            setComposing(false);
+            setOpenId(id);
+          }}
+        />
+      ) : null}
     </>
+  );
+}
+
+/**
+ * Start a conversation from here instead of hunting for the job: pick the
+ * client, then which of their jobs it's about, and the thread opens ready to
+ * type. Jobs without a client are reachable under "No client".
+ */
+function NewMessageModal({
+  projects,
+  onClose,
+  onPick,
+}: {
+  projects: Proj[];
+  onClose: () => void;
+  onPick: (projectId: string) => void;
+}) {
+  const [companyName, setCompanyName] = useState("");
+  const [projectId, setProjectId] = useState("");
+
+  const companies = useMemo(() => {
+    const names = new Set<string>();
+    for (const p of projects) names.add(p.client_company?.name ?? "No client");
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [projects]);
+
+  const companyJobs = useMemo(
+    () =>
+      projects
+        .filter((p) => (p.client_company?.name ?? "No client") === companyName)
+        .sort((a, b) => a.address.localeCompare(b.address)),
+    [projects, companyName],
+  );
+
+  return (
+    <Modal
+      title="New message"
+      onClose={onClose}
+      footer={
+        <>
+          <button onClick={onClose} className="btn-ghost">
+            Cancel
+          </button>
+          <button onClick={() => projectId && onPick(projectId)} disabled={!projectId} className="btn-brand">
+            Open thread
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <Field label="Client">
+          <select
+            value={companyName}
+            onChange={(e) => {
+              setCompanyName(e.target.value);
+              setProjectId("");
+            }}
+            className="input"
+          >
+            <option value="">Choose…</option>
+            {companies.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {companyName ? (
+          <Field label="Which job is this about?">
+            <select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="input">
+              <option value="">Choose…</option>
+              {companyJobs.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.address}
+                  {p.contact?.name ? ` · ${p.contact.name}` : ""}
+                </option>
+              ))}
+            </select>
+          </Field>
+        ) : null}
+      </div>
+    </Modal>
   );
 }
 

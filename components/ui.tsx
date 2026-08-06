@@ -89,8 +89,11 @@ export function Table({
 
 /**
  * The editing surface for everything. Click a row, get this, change anything,
- * save once (docs/13).
+ * save once (docs/13). Modals can stack (add a rep from inside New job);
+ * Escape only ever closes the top one, so the parent's typed state survives.
  */
+const modalStack: (() => void)[] = [];
+
 export function Modal({
   title,
   onClose,
@@ -107,12 +110,15 @@ export function Modal({
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    modalStack.push(onClose);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && modalStack[modalStack.length - 1] === onClose) onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => {
-      document.body.style.overflow = prev;
+      const i = modalStack.indexOf(onClose);
+      if (i >= 0) modalStack.splice(i, 1);
+      if (modalStack.length === 0) document.body.style.overflow = prev;
       document.removeEventListener("keydown", onKey);
     };
   }, [onClose]);

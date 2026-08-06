@@ -504,6 +504,8 @@ export type Database = {
           note: string | null
           paid_on: string
           project_id: string
+          proof_name: string | null
+          proof_path: string | null
         }
         Insert: {
           amount: number
@@ -514,6 +516,8 @@ export type Database = {
           note?: string | null
           paid_on?: string
           project_id: string
+          proof_name?: string | null
+          proof_path?: string | null
         }
         Update: {
           amount?: number
@@ -524,6 +528,8 @@ export type Database = {
           note?: string | null
           paid_on?: string
           project_id?: string
+          proof_name?: string | null
+          proof_path?: string | null
         }
         Relationships: [
           {
