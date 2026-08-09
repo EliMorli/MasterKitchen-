@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Plus } from "lucide-react";
+import { Plus, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Badge, Empty, Field, Modal, Topbar } from "@/components/ui";
-import { ChatThread, type Msg } from "@/components/comms";
+import { AssistantThread, ChatThread, type Msg } from "@/components/comms";
 import { dateTime } from "@/lib/format";
 
 type Proj = {
@@ -43,6 +43,7 @@ export default function CommunicationsPage() {
       supabase
         .from("wa_message")
         .select("*")
+        .neq("channel", "assistant") // the assistant has its own pinned thread
         .order("created_at", { ascending: false })
         .limit(1000),
       supabase
@@ -102,12 +103,13 @@ export default function CommunicationsPage() {
   }, [threads, q]);
 
   const attention = shown.filter((t) => t.unread > 0 || t.important > 0);
-  // Lead-thread messages aren't unrouted — they live on the Lead Board until
-  // the lead becomes a job and brings its thread along.
-  const unrouted = msgs.filter((m) => !m.project_id && !m.lead_id);
+  // Lead-thread and assistant messages aren't unrouted — leads live on the
+  // Lead Board until converted, and the assistant has its own pinned thread.
+  const unrouted = msgs.filter((m) => !m.project_id && !m.lead_id && m.channel !== "assistant");
   // Any job can be opened — including one with no messages yet (that's what
   // "New message" does); its stats simply don't exist yet.
-  const openProject = projects.find((p) => p.id === openId) ?? null;
+  const ASSISTANT = "__assistant__";
+  const openProject = openId === ASSISTANT ? null : (projects.find((p) => p.id === openId) ?? null);
 
   return (
     <>
@@ -127,16 +129,28 @@ export default function CommunicationsPage() {
         }
       />
 
-      {!loading && threads.length === 0 && unrouted.length === 0 && !openId ? (
-        <div className="card">
-          <Empty
-            title="No conversations yet"
-            hint="WhatsApp traffic lands on each job automatically; you can also message from a job's Communications tab."
-          />
-        </div>
-      ) : (
+      {/* The grid always renders — the Assistant thread must stay reachable
+          even on a workspace with no job conversations yet. */}
+      {(
         <div className="grid gap-4 lg:grid-cols-[minmax(18rem,26rem)_1fr]">
           <div className="space-y-4">
+            <button
+              onClick={() => setOpenId(ASSISTANT)}
+              className={`card flex w-full items-center gap-3 px-4 py-3 text-left ${
+                openId === ASSISTANT ? "ring-2 ring-violet-400" : "hover:bg-ink-50"
+              }`}
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-violet-700">
+                <Sparkles size={16} />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-ink-900">Assistant</span>
+                <span className="muted block truncate text-xs">
+                  Text a job update — I&apos;ll file it for you
+                </span>
+              </span>
+            </button>
+
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -188,7 +202,18 @@ export default function CommunicationsPage() {
           </div>
 
           <div className="card overflow-hidden">
-            {openProject ? (
+            {openId === ASSISTANT ? (
+              <>
+                <header className="flex items-center gap-2 border-b border-ink-200 px-4 py-3">
+                  <Sparkles size={15} className="text-violet-700" />
+                  <div>
+                    <p className="text-sm font-semibold text-ink-900">Assistant</p>
+                    <p className="muted text-xs">Updates the board, calendar, expenses & change orders</p>
+                  </div>
+                </header>
+                <AssistantThread />
+              </>
+            ) : openProject ? (
               <>
                 <header className="flex items-center justify-between border-b border-ink-200 px-4 py-3">
                   <div className="min-w-0">
