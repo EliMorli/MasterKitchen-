@@ -38,14 +38,45 @@ export async function POST(request: NextRequest) {
   }
 
   let text = "";
+  let requestedSession: string | null = null;
   try {
     const body = await request.json();
     if (typeof body.text === "string") text = body.text.trim().slice(0, 2000);
+    if (typeof body.session_id === "string") requestedSession = body.session_id;
   } catch {
     /* fall through to the empty-text check */
   }
   if (!text) {
     return NextResponse.json({ error: "text is required" }, { status: 400 });
+  }
+
+  // Each conversation is a session (ChatGPT-style): no session_id means this
+  // is the first message of a fresh chat — mint one, titled by the command.
+  let sessionId = requestedSession;
+  if (sessionId) {
+    const { data: existing } = await supabase
+      .from("assistant_session")
+      .select("id")
+      .eq("id", sessionId)
+      .maybeSingle();
+    if (!existing) sessionId = null; // deleted meanwhile — start fresh
+  }
+  if (!sessionId) {
+    const { data: created, error: sessionError } = await supabase
+      .from("assistant_session")
+      .insert({ title: text.slice(0, 60) })
+      .select("id")
+      .single();
+    if (sessionError || !created) {
+      return NextResponse.json({ error: "could not create session" }, { status: 500 });
+    }
+    sessionId = created.id;
+  } else {
+    // Bubble the session to the top of the history list.
+    await supabase
+      .from("assistant_session")
+      .update({ updated_at: new Date().toISOString() })
+      .eq("id", sessionId);
   }
 
   // The conversation is the record: persist the command before acting on it.
@@ -59,11 +90,12 @@ export async function POST(request: NextRequest) {
       status: "logged",
       body: text,
       from_name: user.email ?? "staff",
+      session_id: sessionId,
     })
     .select("id")
     .single();
 
-  const reply = await runAgent(supabase, text, commandRow?.id ?? null);
+  const reply = await runAgent(supabase, text, commandRow?.id ?? null, sessionId);
 
   await supabase.from("wa_message").insert({
     channel: "assistant",
@@ -72,15 +104,17 @@ export async function POST(request: NextRequest) {
     body: reply.slice(0, 4000),
     from_name: "Assistant",
     read_at: new Date().toISOString(), // our own assistant's replies are never "unread"
+    session_id: sessionId,
   });
 
-  return NextResponse.json({ reply });
+  return NextResponse.json({ reply, session_id: sessionId });
 }
 
 async function runAgent(
   supabase: Awaited<ReturnType<typeof createClient>>,
   text: string,
   commandId: string | null,
+  sessionId: string,
 ): Promise<string> {
   if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
     return "I'm not connected to a brain yet — add ANTHROPIC_API_KEY to the Vercel environment variables and redeploy, then I can start taking commands.";
@@ -88,14 +122,15 @@ async function runAgent(
 
   const client = new Anthropic();
 
-  // Recent thread = short-term memory, so follow-ups like "the Apex one"
-  // resolve. The just-persisted command is excluded by id (not by position —
-  // another staff member may have written a newer row in between) and
-  // re-added below as the final user turn.
+  // This session's thread = short-term memory, so follow-ups like "the Apex
+  // one" resolve. The just-persisted command is excluded by id (not by
+  // position — another staff member may have written a newer row in between)
+  // and re-added below as the final user turn.
   let historyQuery = supabase
     .from("wa_message")
     .select("id, direction, body")
     .eq("channel", "assistant")
+    .eq("session_id", sessionId)
     .order("created_at", { ascending: false })
     .limit(12);
   if (commandId) historyQuery = historyQuery.neq("id", commandId);

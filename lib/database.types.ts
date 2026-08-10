@@ -52,6 +52,27 @@ export type Database = {
           },
         ]
       }
+      assistant_session: {
+        Row: {
+          created_at: string
+          id: string
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          title?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          title?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       automation: {
         Row: {
           config: Json
@@ -758,6 +779,7 @@ export type Database = {
           lead_id: string | null
           project_id: string | null
           read_at: string | null
+          session_id: string | null
           status: string
           to_phone: string | null
           wamid: string | null
@@ -775,6 +797,7 @@ export type Database = {
           lead_id?: string | null
           project_id?: string | null
           read_at?: string | null
+          session_id?: string | null
           status?: string
           to_phone?: string | null
           wamid?: string | null
@@ -792,11 +815,19 @@ export type Database = {
           lead_id?: string | null
           project_id?: string | null
           read_at?: string | null
+          session_id?: string | null
           status?: string
           to_phone?: string | null
           wamid?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "wa_message_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "assistant_session"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "wa_message_lead_id_fkey"
             columns: ["lead_id"]

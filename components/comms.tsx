@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Star, Send, Sparkles } from "lucide-react";
+import { History as HistoryIcon, Plus, Send, Sparkles, Star, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Empty } from "@/components/ui";
 import { dateTime } from "@/lib/format";
@@ -180,41 +180,72 @@ export function ChatThread({
 }
 
 /**
- * The command agent's window. Type an update the way you'd text a foreman —
- * "tomorrow we're installing cabinets at 412 maple st" — and the assistant
- * updates the CRM and confirms exactly what it did. Same brain the WhatsApp
- * number will use once connected.
+ * The command agent's window, ChatGPT-style: every conversation is its own
+ * session. Opening the assistant starts a fresh chat; History lists the old
+ * ones to reopen or delete (deleting a session removes its messages too —
+ * the DB cascade). The transcript of a session survives reloads.
  */
+type AssistantSession = Database["public"]["Tables"]["assistant_session"]["Row"];
+
 export function AssistantThread() {
   const supabase = createClient();
+  const [sessionId, setSessionId] = useState<string | null>(null); // null = fresh chat
+  const [sessions, setSessions] = useState<AssistantSession[]>([]);
+  const [view, setView] = useState<"chat" | "history">("chat");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [body, setBody] = useState("");
-  const [loading, setLoading] = useState(true);
   const [thinking, setThinking] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
 
-  async function load(): Promise<Msg[]> {
+  async function loadSessions() {
+    const { data } = await supabase
+      .from("assistant_session")
+      .select("*")
+      .order("updated_at", { ascending: false })
+      .limit(100);
+    setSessions((data as AssistantSession[]) ?? []);
+  }
+
+  async function loadMsgs(sid: string): Promise<Msg[]> {
     // Newest-first + reverse: the cap must trim OLD messages, not new ones.
     const { data } = await supabase
       .from("wa_message")
       .select("*")
       .eq("channel", "assistant")
+      .eq("session_id", sid)
       .order("created_at", { ascending: false })
-      .limit(300);
+      .limit(200);
     const rows = ((data as Msg[]) ?? []).reverse();
     setMsgs(rows);
-    setLoading(false);
     return rows;
   }
 
   useEffect(() => {
-    load();
+    loadSessions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "nearest" });
   }, [msgs.length, thinking]);
+
+  function newChat() {
+    setSessionId(null);
+    setMsgs([]);
+    setView("chat");
+  }
+
+  async function openSession(sid: string) {
+    setSessionId(sid);
+    setView("chat");
+    await loadMsgs(sid);
+  }
+
+  async function deleteSession(sid: string) {
+    await supabase.from("assistant_session").delete().eq("id", sid); // messages cascade
+    if (sid === sessionId) newChat();
+    await loadSessions();
+  }
 
   async function send() {
     const text = body.trim();
@@ -236,11 +267,19 @@ export function AssistantThread() {
       const res = await fetch("/api/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, session_id: sessionId }),
       });
       if (!res.ok) throw new Error(String(res.status));
-      const { reply } = (await res.json()) as { reply?: string };
-      const rows = await load();
+      const { reply, session_id } = (await res.json()) as {
+        reply?: string;
+        session_id?: string;
+      };
+      const sid = session_id ?? sessionId;
+      let rows: Msg[] = [];
+      if (sid) {
+        setSessionId(sid);
+        rows = await loadMsgs(sid);
+      }
       // The response is the source of truth: if persisting the reply row
       // failed server-side, still show what the agent actually did.
       if (reply && !rows.some((m) => m.direction === "in" && m.body === reply)) {
@@ -256,10 +295,11 @@ export function AssistantThread() {
           } as Msg,
         ]);
       }
+      await loadSessions();
     } catch {
       // The command may have been received and partially applied before the
       // failure — resync from the DB and say so honestly.
-      await load().catch(() => {});
+      if (sessionId) await loadMsgs(sessionId).catch(() => {});
       setMsgs((prev) => [
         ...prev,
         {
@@ -278,47 +318,98 @@ export function AssistantThread() {
 
   return (
     <div className="flex h-[32rem] flex-col">
-      <div className="flex-1 space-y-2 overflow-y-auto p-4">
-        {loading ? (
-          <p className="muted text-sm">Loading…</p>
-        ) : msgs.length === 0 ? (
-          <Empty
-            title="Text me a job update"
-            hint={'Try: "tomorrow we are installing cabinets in 412 maple st" or "demo is done at Foxglove". I update the board, calendar, expenses and change orders — and always confirm what I did.'}
-          />
-        ) : (
-          msgs.map((m) => {
-            const ours = m.direction === "out";
-            return (
-              <div key={m.id} className={`flex ${ours ? "justify-end" : "justify-start"}`}>
-                <div
-                  className={`max-w-[80%] rounded-xl px-3.5 py-2 text-sm shadow-sm ${
-                    ours ? "bg-brand-600 text-white" : "bg-white text-ink-900 ring-1 ring-ink-200"
+      <div className="flex items-center justify-between border-b border-ink-100 px-3 py-2">
+        <button
+          onClick={() => setView(view === "history" ? "chat" : "history")}
+          className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold ${
+            view === "history" ? "bg-ink-900 text-white" : "text-ink-500 hover:text-ink-800"
+          }`}
+        >
+          <HistoryIcon size={13} /> History
+          {sessions.length ? <span className="nums">{sessions.length}</span> : null}
+        </button>
+        <button
+          onClick={newChat}
+          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold text-brand-700 hover:bg-brand-50"
+        >
+          <Plus size={13} /> New chat
+        </button>
+      </div>
+
+      {view === "history" ? (
+        <div className="flex-1 overflow-y-auto">
+          {sessions.length === 0 ? (
+            <Empty title="No past chats" hint="Conversations show up here — start one below." />
+          ) : (
+            <ul className="divide-y divide-ink-100">
+              {sessions.map((s) => (
+                <li
+                  key={s.id}
+                  onClick={() => openSession(s.id)}
+                  className={`group flex cursor-pointer items-center justify-between gap-2 px-4 py-2.5 hover:bg-ink-50 ${
+                    s.id === sessionId ? "bg-brand-50" : ""
                   }`}
                 >
-                  {!ours ? (
-                    <p className="mb-0.5 flex items-center gap-1 text-xs font-semibold text-violet-700">
-                      <Sparkles size={11} /> Assistant
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-ink-900">{s.title}</p>
+                    <p className="muted text-xs">{dateTime(s.updated_at)}</p>
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteSession(s.id);
+                    }}
+                    aria-label="Delete chat"
+                    className="shrink-0 rounded-md p-1.5 text-ink-300 opacity-0 transition-opacity hover:bg-red-50 hover:text-red-600 group-hover:opacity-100"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : (
+        <div className="flex-1 space-y-2 overflow-y-auto p-4">
+          {msgs.length === 0 ? (
+            <Empty
+              title="Text me a job update"
+              hint={'Try: "tomorrow we are installing cabinets in 412 maple st" or "demo is done at Foxglove". I update the board, calendar, expenses and change orders — and always confirm what I did.'}
+            />
+          ) : (
+            msgs.map((m) => {
+              const ours = m.direction === "out";
+              return (
+                <div key={m.id} className={`flex ${ours ? "justify-end" : "justify-start"}`}>
+                  <div
+                    className={`max-w-[80%] rounded-xl px-3.5 py-2 text-sm shadow-sm ${
+                      ours ? "bg-brand-600 text-white" : "bg-white text-ink-900 ring-1 ring-ink-200"
+                    }`}
+                  >
+                    {!ours ? (
+                      <p className="mb-0.5 flex items-center gap-1 text-xs font-semibold text-violet-700">
+                        <Sparkles size={11} /> Assistant
+                      </p>
+                    ) : null}
+                    <p className="whitespace-pre-wrap break-words">{m.body}</p>
+                    <p className={`mt-1 text-[10px] ${ours ? "text-brand-100" : "text-ink-400"}`}>
+                      {dateTime(m.created_at)}
                     </p>
-                  ) : null}
-                  <p className="whitespace-pre-wrap break-words">{m.body}</p>
-                  <p className={`mt-1 text-[10px] ${ours ? "text-brand-100" : "text-ink-400"}`}>
-                    {dateTime(m.created_at)}
-                  </p>
+                  </div>
                 </div>
+              );
+            })
+          )}
+          {thinking ? (
+            <div className="flex justify-start">
+              <div className="rounded-xl bg-white px-3.5 py-2 text-sm text-ink-500 shadow-sm ring-1 ring-ink-200">
+                <span className="animate-pulse">Working on it…</span>
               </div>
-            );
-          })
-        )}
-        {thinking ? (
-          <div className="flex justify-start">
-            <div className="rounded-xl bg-white px-3.5 py-2 text-sm text-ink-500 shadow-sm ring-1 ring-ink-200">
-              <span className="animate-pulse">Working on it…</span>
             </div>
-          </div>
-        ) : null}
-        <div ref={bottom} />
-      </div>
+          ) : null}
+          <div ref={bottom} />
+        </div>
+      )}
 
       <div className="border-t border-ink-200 p-3">
         <div className="flex gap-2">
@@ -328,14 +419,25 @@ export function AssistantThread() {
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
+                if (view === "history") setView("chat");
                 send();
               }
+            }}
+            onFocus={() => {
+              if (view === "history") setView("chat");
             }}
             className="input flex-1"
             placeholder='Text an update — "demo is done at 450 Monmouth"…'
             disabled={thinking}
           />
-          <button onClick={send} disabled={!body.trim() || thinking} className="btn-brand">
+          <button
+            onClick={() => {
+              if (view === "history") setView("chat");
+              send();
+            }}
+            disabled={!body.trim() || thinking}
+            className="btn-brand"
+          >
             <Send size={15} /> Send
           </button>
         </div>
