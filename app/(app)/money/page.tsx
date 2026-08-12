@@ -8,7 +8,7 @@ import { money, num, shortDate, toISODate } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
 type Invoice = Database["public"]["Tables"]["invoice"]["Row"] & {
-  project: { id: string; address: string } | null;
+  project: { id: string; address: string; client_company: { name: string } | null } | null;
 };
 type Expense = Database["public"]["Tables"]["expense"]["Row"] & {
   project: { id: string; address: string } | null;
@@ -17,7 +17,7 @@ type Project = Database["public"]["Tables"]["project"]["Row"];
 type CO = { project_id: string; amount: number; status: string };
 type Payment = { invoice_id: string; amount: number; paid_on: string };
 
-type SortKey = "number" | "job" | "description" | "amount" | "due" | "status";
+type SortKey = "number" | "job" | "client" | "description" | "amount" | "due" | "status";
 // Status sorts by money-at-risk, not alphabetically — what needs chasing first.
 const STATUS_RANK: Record<string, number> = { overdue: 0, partial: 1, sent: 2, paid: 3, draft: 4 };
 
@@ -36,7 +36,7 @@ export default function MoneyPage() {
 
   useEffect(() => {
     Promise.all([
-      supabase.from("invoice").select("*, project(id, address)").order("created_at", { ascending: false }),
+      supabase.from("invoice").select("*, project(id, address, client_company(name))").order("created_at", { ascending: false }),
       supabase.from("expense").select("*, project(id, address)").order("spent_at", { ascending: false }),
       supabase.from("project").select("*").eq("archived", false),
       supabase.from("change_order").select("project_id, amount, status"),
@@ -86,6 +86,7 @@ export default function MoneyPage() {
       switch (sort.key) {
         case "number": return i.number;
         case "job": return i.project?.address ?? "";
+        case "client": return i.project?.client_company?.name ?? "";
         case "description": return i.description ?? "";
         case "amount": return num(i.amount);
         case "due": return i.due_at ?? "";
@@ -185,6 +186,7 @@ export default function MoneyPage() {
               head={[
                 <SortHead key="n" label="Number" k="number" />,
                 <SortHead key="j" label="Job" k="job" />,
+                <SortHead key="c" label="Client" k="client" />,
                 <SortHead key="d" label="Description" k="description" />,
                 <SortHead key="a" label="Amount" k="amount" />,
                 <SortHead key="u" label="Due" k="due" />,
@@ -199,6 +201,7 @@ export default function MoneyPage() {
                     </Link>
                   </td>
                   <td className="td">{i.project?.address ?? "—"}</td>
+                  <td className="td text-ink-600">{i.project?.client_company?.name ?? "—"}</td>
                   <td className="td text-ink-600">{i.description ?? "—"}</td>
                   <td className="td nums font-bold">{money(i.amount)}</td>
                   <td
