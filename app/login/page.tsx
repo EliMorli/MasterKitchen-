@@ -69,6 +69,13 @@ export default async function LoginPage({
             Sign in
           </button>
 
+          <a
+            href="/auth/forgot"
+            className="block text-center text-sm font-medium text-brand-700 hover:underline"
+          >
+            Forgot password?
+          </a>
+
           <p className="text-center text-xs text-ink-500">
             Accounts are created by an owner. Ask them to add you in Settings.
           </p>
