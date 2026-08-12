@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Plus, LayoutGrid, List } from "lucide-react";
+import { FileUp, LayoutGrid, List, Plus, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Topbar, Modal, Field, Badge, Table, Empty } from "@/components/ui";
 import { PHASES, PHASE_LABEL, type Phase } from "@/lib/labels";
@@ -377,7 +377,29 @@ function JobsList({
   );
 }
 
-/** Intake is one WhatsApp message: address, client, rep. Thirty seconds, done. */
+/** What the PDF reader hands back — same fields the form below collects. */
+type Extracted = {
+  doc_type: "contract" | "invoice" | "estimate" | "work_order" | "other";
+  address: string | null;
+  city: string | null;
+  client_company: string | null;
+  contact_name: string | null;
+  contact_phone: string | null;
+  contact_email: string | null;
+  price: number | null;
+  summary: string;
+};
+
+// Sentinel for "the PDF named a client we don't have yet — create it on save".
+const NEW_COMPANY = "__new__";
+
+/**
+ * Intake two ways: type it in (address, client, rep — thirty seconds), or
+ * drop the paperwork. A contract/invoice PDF is read server-side and the
+ * form prefills — the user confirms, fills what's missing, and creates. The
+ * PDF itself lands in the job's Documents. Built for migrating existing jobs
+ * over from paper.
+ */
 function NewJobModal({
   companies,
   reps,
@@ -392,6 +414,7 @@ function NewJobModal({
   const supabase = createClient();
   const [address, setAddress] = useState("");
   const [city, setCity] = useState("");
+  const [price, setPrice] = useState("");
   const [companyId, setCompanyId] = useState("");
   const [contactId, setContactId] = useState("");
   const [saving, setSaving] = useState(false);
@@ -400,7 +423,75 @@ function NewJobModal({
   const [allReps, setAllReps] = useState<Rep[]>(reps);
   const [addingRep, setAddingRep] = useState(false);
 
+  // PDF intake state
+  const [scanning, setScanning] = useState(false);
+  const [scanErr, setScanErr] = useState("");
+  const [scanned, setScanned] = useState<Extracted | null>(null);
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+
   const companyReps = allReps.filter((r) => r.client_company_id === companyId);
+  // A contact read from the PDF that doesn't match an existing rep — created
+  // on save, but only if the user hasn't picked a rep themselves.
+  const pendingContact =
+    scanned?.contact_name && !contactId
+      ? { name: scanned.contact_name, phone: scanned.contact_phone, email: scanned.contact_email }
+      : null;
+
+  async function scan(file: File) {
+    if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
+      setScanErr("That's not a PDF — drop a contract, invoice or estimate as PDF.");
+      return;
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      setScanErr("That PDF is over 4MB — try a smaller one, or enter the job by hand.");
+      return;
+    }
+    setScanErr("");
+    setScanning(true);
+    try {
+      const b64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      const res = await fetch("/api/job-intake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdf: b64 }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Could not read the PDF.");
+      const x = body.extracted as Extracted;
+      setScanned(x);
+      setPdfFile(file);
+      if (x.address) setAddress(x.address);
+      if (x.city) setCity(x.city);
+      if (x.price != null) setPrice(String(x.price));
+      // Match the client by name; unknown names become a new client on save.
+      if (x.client_company) {
+        const needle = x.client_company.trim().toLowerCase();
+        const match = companies.find((c) => {
+          const n = c.name.trim().toLowerCase();
+          return n === needle || n.includes(needle) || needle.includes(n);
+        });
+        setCompanyId(match ? match.id : NEW_COMPANY);
+        if (match && x.contact_name) {
+          const rep = reps.find(
+            (r) =>
+              r.client_company_id === match.id &&
+              r.name.trim().toLowerCase() === x.contact_name!.trim().toLowerCase(),
+          );
+          if (rep) setContactId(rep.id);
+        }
+      }
+    } catch (e) {
+      setScanErr(e instanceof Error ? e.message : "Could not read the PDF.");
+    } finally {
+      setScanning(false);
+    }
+  }
 
   async function create() {
     if (!address.trim()) {
@@ -408,6 +499,39 @@ function NewJobModal({
       return;
     }
     setSaving(true);
+
+    // Client from the PDF that we don't have yet: create it now.
+    let finalCompanyId: string | null = companyId || null;
+    if (companyId === NEW_COMPANY && scanned?.client_company) {
+      const { data: co, error: coErr } = await supabase
+        .from("client_company")
+        .insert({ name: scanned.client_company.trim() })
+        .select("id")
+        .single();
+      if (coErr || !co) {
+        setSaving(false);
+        setError(coErr?.message ?? "Could not create the client.");
+        return;
+      }
+      finalCompanyId = co.id;
+    }
+
+    // Same for the contact person named on the paperwork.
+    let finalContactId: string | null = contactId || null;
+    if (!finalContactId && pendingContact && finalCompanyId) {
+      const { data: ct } = await supabase
+        .from("contact")
+        .insert({
+          client_company_id: finalCompanyId,
+          name: pendingContact.name,
+          phone: pendingContact.phone,
+          email: pendingContact.email,
+        })
+        .select("id")
+        .single();
+      finalContactId = ct?.id ?? null;
+    }
+
     // The passed-in code is derived from the visible (non-archived) board;
     // archiving the highest-numbered job would make it collide. Compute the
     // next code against ALL projects at save time — code is unique.
@@ -420,22 +544,47 @@ function NewJobModal({
     const maxN = top?.[0]?.code?.match(/(\d+)$/);
     const code = `MK-${year}-${String((maxN ? parseInt(maxN[1], 10) : 0) + 1).padStart(4, "0")}`;
 
+    const priceNum = price.trim() ? Number(price.replace(/[$,]/g, "")) : null;
     const { data, error } = await supabase
       .from("project")
       .insert({
         code,
         address: address.trim(),
         city: city.trim() || null,
-        client_company_id: companyId || null,
-        contact_id: contactId || null,
+        client_company_id: finalCompanyId,
+        contact_id: finalContactId,
+        price: priceNum != null && Number.isFinite(priceNum) ? priceNum : null,
       })
       .select("id")
       .single();
-    setSaving(false);
     if (error || !data) {
+      setSaving(false);
       setError(error?.message ?? "Could not create the job.");
       return;
     }
+
+    // File the paperwork on the job it just created.
+    if (pdfFile && scanned) {
+      const path = `${data.id}/${Date.now()}-${pdfFile.name}`;
+      const { error: upErr } = await supabase.storage.from("documents").upload(path, pdfFile, {
+        contentType: "application/pdf",
+      });
+      if (!upErr) {
+        const tag =
+          scanned.doc_type === "contract" || scanned.doc_type === "invoice"
+            ? scanned.doc_type
+            : "other";
+        await supabase.from("document").insert({
+          project_id: data.id,
+          name: pdfFile.name,
+          tag,
+          storage_path: path,
+        });
+        logActivity(supabase, data.id, "doc", `Uploaded ${pdfFile.name} (${tag}) via PDF intake`);
+      }
+    }
+
+    setSaving(false);
     onCreated(data.id);
   }
 
@@ -455,6 +604,62 @@ function NewJobModal({
       }
     >
       <div className="space-y-4">
+        {scanned ? (
+          <div className="flex items-start gap-2 rounded-lg bg-violet-50 px-3 py-2.5 text-sm text-violet-900 ring-1 ring-violet-200">
+            <Sparkles size={15} className="mt-0.5 shrink-0 text-violet-700" />
+            <div>
+              <p className="font-medium">{scanned.summary}</p>
+              <p className="text-xs text-violet-700">
+                Check the fields below, fill in what&apos;s missing, then create — the PDF is filed
+                on the job&apos;s Documents.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <label
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              const f = e.dataTransfer.files?.[0];
+              if (f) scan(f);
+            }}
+            className={`flex cursor-pointer items-center gap-3 rounded-lg border-2 border-dashed px-4 py-3 text-sm transition-colors ${
+              dragOver
+                ? "border-brand-500 bg-brand-50 text-brand-700"
+                : "border-ink-200 text-ink-500 hover:border-brand-400 hover:text-ink-700"
+            }`}
+          >
+            <FileUp size={18} className="shrink-0" />
+            {scanning ? (
+              <span className="animate-pulse font-medium">Reading the PDF…</span>
+            ) : (
+              <span>
+                <span className="font-medium text-ink-800">Have the paperwork?</span> Drop a
+                contract, invoice or estimate PDF here — the form fills itself.
+              </span>
+            )}
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              className="hidden"
+              disabled={scanning}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) scan(f);
+                e.target.value = "";
+              }}
+            />
+          </label>
+        )}
+        {scanErr ? (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">{scanErr}</p>
+        ) : null}
+
         <Field label="Job address">
           <input
             autoFocus
@@ -472,6 +677,15 @@ function NewJobModal({
             placeholder="Lakewood"
           />
         </Field>
+        <Field label="Price" hint="Optional — the job total, if it's already agreed.">
+          <input
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+            className="input"
+            placeholder="18500"
+            inputMode="decimal"
+          />
+        </Field>
         <Field label="Client (the GC)" hint="Can be added later — the address is enough to start.">
           <select
             value={companyId}
@@ -482,6 +696,9 @@ function NewJobModal({
             className="input"
           >
             <option value="">Choose…</option>
+            {companyId === NEW_COMPANY && scanned?.client_company ? (
+              <option value={NEW_COMPANY}>New client: {scanned.client_company}</option>
+            ) : null}
             {companies.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
@@ -489,7 +706,19 @@ function NewJobModal({
             ))}
           </select>
         </Field>
-        {companyId ? (
+        {companyId === NEW_COMPANY && scanned?.client_company ? (
+          <p className="rounded-md bg-ink-50 px-3 py-2 text-xs text-ink-600">
+            <span className="font-semibold">{scanned.client_company}</span> isn&apos;t in Clients
+            yet — it&apos;s created with this job
+            {pendingContact ? (
+              <>
+                , with <span className="font-semibold">{pendingContact.name}</span> as the sales rep
+              </>
+            ) : null}
+            .
+          </p>
+        ) : null}
+        {companyId && companyId !== NEW_COMPANY ? (
           <Field label="Sales rep">
             <div className="flex gap-2">
               <select
@@ -512,6 +741,12 @@ function NewJobModal({
                 + New
               </button>
             </div>
+            {pendingContact ? (
+              <p className="mt-1 text-xs text-ink-500">
+                From the PDF: <span className="font-semibold">{pendingContact.name}</span> — added
+                as a new rep unless you pick one above.
+              </p>
+            ) : null}
           </Field>
         ) : null}
         {error ? (
