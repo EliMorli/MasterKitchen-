@@ -114,6 +114,17 @@ export const LEAD_SOURCE_TONE: Record<string, string> = {
   website: "bg-emerald-100 text-emerald-800",
 };
 
+/** What kind of cost an expense is. "Job cost" = paying whoever does the work
+ * (crew/sub); the rest are the usual side costs of a remodel. */
+export const EXPENSE_CATEGORIES = [
+  "Job cost",
+  "Materials",
+  "Cabinets & countertops",
+  "Permits & inspections",
+  "Disposal",
+  "Other",
+];
+
 /** Common calendar entries, offered as quick picks — free text always allowed. */
 export const EVENT_PRESETS = [
   "Designer visit",

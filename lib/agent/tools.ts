@@ -145,7 +145,8 @@ export function buildAgentTools(supabase: DB) {
 
   const addExpense = betaTool({
     name: "add_expense",
-    description: "Log an expense on a job (dumpster, permit, materials…). Amount in dollars.",
+    description:
+      "Log an expense on a job (dumpster, permit, materials, paying a crew or vendor…). Amount in dollars. Expenses are the job's cost ledger: pick the closest category, name who was paid if the message says, and mark paid=true only when the message says it was already paid.",
     inputSchema: {
       type: "object",
       properties: {
@@ -153,25 +154,59 @@ export function buildAgentTools(supabase: DB) {
         label: { type: "string", description: "What the money went to" },
         amount: { type: "number", description: "Dollar amount, positive" },
         date: { type: "string", description: "Optional YYYY-MM-DD, defaults to today" },
+        category: {
+          type: "string",
+          enum: ["Job cost", "Materials", "Cabinets & countertops", "Permits & inspections", "Disposal", "Other"],
+          description: "Kind of cost. 'Job cost' = paying whoever does the work.",
+        },
+        payee: { type: "string", description: "Who was paid (crew, vendor or store name), if mentioned" },
+        paid: { type: "boolean", description: "true only if the message says it was already paid" },
       },
       required: ["project_id", "label", "amount"],
       additionalProperties: false,
     } as const,
-    run: async (input: { project_id: string; label: string; amount: number; date?: string }) => {
+    run: async (input: {
+      project_id: string;
+      label: string;
+      amount: number;
+      date?: string;
+      category?: string;
+      payee?: string;
+      paid?: boolean;
+    }) => {
       const proj = await requireProject(supabase, input.project_id);
       if (!proj) return err("No job with that project_id.");
       if (!Number.isFinite(input.amount) || input.amount <= 0) return err("amount must be a positive number.");
       if (input.date && !/^\d{4}-\d{2}-\d{2}$/.test(input.date)) return err("date must be YYYY-MM-DD.");
+      // Match a named payee against the partner directory; unknown names are
+      // stored as free text so nothing is lost.
+      let partnerId: string | null = null;
+      let payeeName: string | null = null;
+      if (input.payee?.trim()) {
+        const { data: match } = await supabase
+          .from("partner")
+          .select("id")
+          .ilike("name", `%${input.payee.trim().replace(/[%_]/g, "\\$&")}%`)
+          .limit(2);
+        if (match?.length === 1) partnerId = match[0].id;
+        else payeeName = input.payee.trim().slice(0, 120);
+      }
+      const paid = input.paid === true;
       const { error } = await supabase.from("expense").insert({
         project_id: input.project_id,
         label: input.label.slice(0, 200),
         amount: input.amount,
         spent_at: input.date || new Date().toISOString().slice(0, 10),
+        category: input.category ?? "Other",
+        partner_id: partnerId,
+        payee_name: payeeName,
+        paid,
+        paid_on: paid ? new Date().toISOString().slice(0, 10) : null,
       });
       if (error) return err(error.message);
       logActivity(supabase, input.project_id, "expense",
-        `Assistant logged expense: ${input.label} — $${input.amount.toLocaleString()}`);
-      return `Logged $${input.amount.toLocaleString()} (${input.label}) on ${proj.address}.`;
+        `Assistant logged expense: ${input.label} — $${input.amount.toLocaleString()}${paid ? " (paid)" : " (unpaid)"}`);
+      return `Logged $${input.amount.toLocaleString()} (${input.label}, ${input.category ?? "Other"}, ${paid ? "paid" : "unpaid"}) on ${proj.address}.`;
     },
   });
 

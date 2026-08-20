@@ -111,13 +111,14 @@ export default function ClientsPage() {
         .filter((i) => i.status !== "draft")
         .reduce((s, i) => s + Math.max(0, num(i.amount) - (paidByInvoice.get(i.id) ?? 0)), 0);
 
-      const priced = projs.filter((p) => p.price != null || p.cost != null);
+      // Job cost = the expense ledger; project.cost is retired from the math.
+      const priced = projs.filter((p) => p.price != null || expenseByProject.has(p.id));
       let contractValue = 0;
       let netProfit = 0;
       for (const p of priced) {
         const extras = approvedCoByProject.get(p.id) ?? 0;
         contractValue += num(p.price) + extras;
-        netProfit += num(p.price) + extras - num(p.cost) - (expenseByProject.get(p.id) ?? 0);
+        netProfit += num(p.price) + extras - (expenseByProject.get(p.id) ?? 0);
       }
       const first = projs.reduce<string | null>(
         (m, p) => (m == null || p.created_at < m ? p.created_at : m),

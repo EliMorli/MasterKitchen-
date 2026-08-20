@@ -12,6 +12,8 @@ type Invoice = Database["public"]["Tables"]["invoice"]["Row"] & {
 };
 type Expense = Database["public"]["Tables"]["expense"]["Row"] & {
   project: { id: string; address: string } | null;
+  partner: { name: string } | null;
+  client_company: { name: string } | null;
 };
 type Project = Database["public"]["Tables"]["project"]["Row"];
 type CO = { project_id: string; amount: number; status: string };
@@ -37,7 +39,7 @@ export default function MoneyPage() {
   useEffect(() => {
     Promise.all([
       supabase.from("invoice").select("*, project(id, address, client_company(name))").order("created_at", { ascending: false }),
-      supabase.from("expense").select("*, project(id, address)").order("spent_at", { ascending: false }),
+      supabase.from("expense").select("*, project(id, address), partner(name), client_company(name)").order("spent_at", { ascending: false }),
       supabase.from("project").select("*").eq("archived", false),
       supabase.from("change_order").select("project_id, amount, status"),
       supabase.from("payment").select("invoice_id, amount, paid_on"),
@@ -125,6 +127,15 @@ export default function MoneyPage() {
   const spent = expenses
     .filter((e) => e.spent_at?.startsWith(thisMonth))
     .reduce((s, e) => s + num(e.amount), 0);
+  // Who we still owe — the number the office watches day to day.
+  const unpaidCosts = expenses.filter((e) => !e.paid).reduce((s, e) => s + num(e.amount), 0);
+
+  async function togglePaid(e: Expense) {
+    const paid = !e.paid;
+    const paid_on = paid ? toISODate(new Date()) : null;
+    setExpenses((prev) => prev.map((x) => (x.id === e.id ? { ...x, paid, paid_on } : x)));
+    await supabase.from("expense").update({ paid, paid_on }).eq("id", e.id);
+  }
 
   // Upsell = the extra the GC approved on top of the original price. Approved
   // change orders are money already won; pending ones are still on the table.
@@ -135,10 +146,11 @@ export default function MoneyPage() {
     .filter((c) => c.status === "pending")
     .reduce((s, c) => s + num(c.amount), 0);
 
-  // Profit per job: price + approved change orders − cost − expenses.
+  // Profit per job: price + approved change orders − expenses. The expense
+  // ledger IS the job's cost — project.cost is retired from the math.
   const profitRows = useMemo(() => {
     return projects
-      .filter((p) => p.price != null || p.cost != null)
+      .filter((p) => p.price != null || expenses.some((e) => e.project_id === p.id))
       .map((p) => {
         const extras = cos
           .filter((c) => c.project_id === p.id && c.status === "approved")
@@ -146,7 +158,7 @@ export default function MoneyPage() {
         const exp = expenses
           .filter((e) => e.project_id === p.id)
           .reduce((s, e) => s + num(e.amount), 0);
-        const profit = num(p.price) + extras - num(p.cost) - exp;
+        const profit = num(p.price) + extras - exp;
         return { p, extras, exp, profit };
       })
       .sort((a, b) => b.profit - a.profit);
@@ -156,8 +168,14 @@ export default function MoneyPage() {
     <>
       <Topbar title="Cashflow" />
 
-      <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard label="Waiting to be paid" value={money(outstanding)} />
+        <StatCard
+          label="Unpaid costs"
+          value={money(unpaidCosts)}
+          tone={unpaidCosts ? "text-amber-700" : "text-ink-900"}
+          hint="expenses not yet paid out"
+        />
         <StatCard
           label="Overdue"
           value={String(overdue.length)}
@@ -232,7 +250,7 @@ export default function MoneyPage() {
               <Empty title="Nothing priced yet" hint="Set a price and a cost on a job and it shows up here." />
             </div>
           ) : (
-            <Table head={["Job", "Price", "Extras", "Cost", "Expenses", "Profit"]}>
+            <Table head={["Job", "Price", "Extras", "Job cost (expenses)", "Profit"]}>
               {profitRows.map(({ p, extras, exp, profit }) => (
                 <tr key={p.id} className="hover:bg-ink-50">
                   <td className="td font-semibold">
@@ -242,7 +260,6 @@ export default function MoneyPage() {
                   </td>
                   <td className="td nums">{money(p.price)}</td>
                   <td className="td nums text-ink-500">{extras ? `+${money(extras)}` : "—"}</td>
-                  <td className="td nums text-ink-500">{p.cost != null ? `−${money(p.cost)}` : "—"}</td>
                   <td className="td nums text-ink-500">{exp ? `−${money(exp)}` : "—"}</td>
                   <td className={`td nums font-bold ${profit >= 0 ? "text-emerald-700" : "text-red-600"}`}>
                     {money(profit)}
@@ -260,7 +277,7 @@ export default function MoneyPage() {
               <Empty title="No expenses logged" hint="Permits, dumpsters, materials — add them on the job's Money tab." />
             </div>
           ) : (
-            <Table head={["What", "Job", "Date", "Amount"]}>
+            <Table head={["What", "Job", "Category", "Paid to", "Date", "Amount", "Status"]} minWidth={820}>
               {expenses.map((e) => (
                 <tr key={e.id} className="hover:bg-ink-50">
                   <td className="td font-medium">{e.label}</td>
@@ -269,8 +286,19 @@ export default function MoneyPage() {
                       {e.project?.address ?? "—"}
                     </Link>
                   </td>
+                  <td className="td text-ink-600">{e.category}</td>
+                  <td className="td text-ink-600">
+                    {e.partner?.name ?? e.client_company?.name ?? e.payee_name ?? "—"}
+                  </td>
                   <td className="td nums text-ink-500">{shortDate(e.spent_at)}</td>
                   <td className="td nums font-semibold">{money(e.amount)}</td>
+                  <td className="td">
+                    <button onClick={() => togglePaid(e)} title={e.paid ? "Mark unpaid" : "Mark paid"}>
+                      <Badge tone={e.paid ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}>
+                        {e.paid ? "paid" : "unpaid"}
+                      </Badge>
+                    </button>
+                  </td>
                 </tr>
               ))}
             </Table>

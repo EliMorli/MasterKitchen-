@@ -5,7 +5,7 @@ import Link from "next/link";
 import { CheckCircle2, Circle, Copy, ExternalLink, Paperclip, Plus, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Badge, Empty, Field, Modal } from "@/components/ui";
-import { CO_TONE, DOC_TAGS, EVENT_PRESETS, PHASES, TRADES, type Phase } from "@/lib/labels";
+import { CO_TONE, DOC_TAGS, EVENT_PRESETS, EXPENSE_CATEGORIES, PHASES, TRADES, type Phase } from "@/lib/labels";
 import { dateTime, money, moneyExact, num, shortDate, timeOfDay } from "@/lib/format";
 import { nextStep } from "@/lib/next-step";
 import { logActivity } from "@/lib/activity";
@@ -19,7 +19,10 @@ type DB = Database["public"]["Tables"];
 type Project = DB["project"]["Row"];
 type Event = DB["event"]["Row"] & { partner: { name: string } | null };
 type Invoice = DB["invoice"]["Row"];
-type Expense = DB["expense"]["Row"];
+type Expense = DB["expense"]["Row"] & {
+  partner: { name: string } | null;
+  client_company: { name: string } | null;
+};
 type CO = DB["change_order"]["Row"];
 type Doc = DB["document"]["Row"];
 type PriceReq = DB["price_request"]["Row"] & { partner: { name: string } | null };
@@ -105,7 +108,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       supabase.from("project").select("*").eq("id", id).maybeSingle(),
       supabase.from("event").select("*, partner(name)").eq("project_id", id).order("date"),
       supabase.from("invoice").select("*").eq("project_id", id).order("created_at"),
-      supabase.from("expense").select("*").eq("project_id", id).order("spent_at"),
+      supabase.from("expense").select("*, partner(name), client_company(name)").eq("project_id", id).order("spent_at"),
       supabase.from("change_order").select("*").eq("project_id", id).order("created_at"),
       supabase.from("document").select("*").eq("project_id", id).order("created_at", { ascending: false }),
       supabase.from("price_request").select("*, partner(name)").eq("project_id", id).order("created_at"),
@@ -120,7 +123,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     setProject((p.data as Project) ?? null);
     setEvents((ev.data as Event[]) ?? []);
     setInvoices(inv.data ?? []);
-    setExpenses(ex.data ?? []);
+    setExpenses((ex.data as Expense[]) ?? []);
     setCos(co.data ?? []);
     setDocs(dc.data ?? []);
     setPrices((pr.data as PriceReq[]) ?? []);
@@ -159,7 +162,6 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         contact_id: project.contact_id,
         crew_id: project.crew_id,
         price: project.price,
-        cost: project.cost,
         notes: project.notes,
         wa_sales_link: project.wa_sales_link,
         wa_crew_link: project.wa_crew_link,
@@ -170,8 +172,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     if (!error) {
       setDirty(false);
       note("Saved");
-      logActivity(supabase, project.id, "edit",
-        `Job saved — price ${money(project.price)}, cost ${money(project.cost)}`);
+      logActivity(supabase, project.id, "edit", `Job saved — price ${money(project.price)}`);
     }
   }
 
@@ -197,8 +198,10 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const crews = partners.filter((p) => p.kind === "crew" || p.kind === "other");
 
   const approvedCOs = cos.filter((c) => c.status === "approved").reduce((s, c) => s + num(c.amount), 0);
+  // The job's cost IS its expenses — several payouts over the job's life, not
+  // one hand-typed number. project.cost is retired from every formula.
   const expenseTotal = expenses.reduce((s, e) => s + num(e.amount), 0);
-  const profit = num(project?.price) + approvedCOs - num(project?.cost) - expenseTotal;
+  const profit = num(project?.price) + approvedCOs - expenseTotal;
   const step = project ? nextStep(project, events, invoices, prices, cos) : null;
 
   if (!project) return <p className="muted p-6">Loading…</p>;
@@ -285,7 +288,23 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             docs={docs}
             reload={reload}
             note={note}
-            onUseCost={(amount) => patch({ cost: amount })}
+            expenseTotal={expenseTotal}
+            onUseVendorPrice={async (pr) => {
+              // An accepted vendor price is a real cost: it lands in the
+              // ledger as an unpaid "Job cost" expense tied to that vendor.
+              await supabase.from("expense").insert({
+                project_id: project.id,
+                label: `${pr.partner?.name ?? "Vendor"} — ${pr.scope ?? "job"}`,
+                amount: num(pr.amount),
+                category: "Job cost",
+                partner_id: pr.partner_id,
+                spent_at: new Date().toISOString().slice(0, 10),
+              });
+              logActivity(supabase, project.id, "price",
+                `${pr.partner?.name ?? "Vendor"}'s price added to expenses: ${money(pr.amount)}`);
+              note("Added to expenses");
+              await reload();
+            }}
             onRepCreated={(r) => {
               setReps((prev) => [...prev, r].sort((a, b) => a.name.localeCompare(b.name)));
               patch({ contact_id: r.id });
@@ -304,6 +323,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             org={org}
             companyName={companies.find((c) => c.id === project.client_company_id)?.name ?? null}
             repName={rep?.name ?? null}
+            partners={partners}
             reload={reload}
           />
         ) : null}
@@ -430,7 +450,8 @@ function OverviewTab({
   docs,
   reload,
   note,
-  onUseCost,
+  expenseTotal,
+  onUseVendorPrice,
   onRepCreated,
 }: {
   project: Project;
@@ -447,7 +468,8 @@ function OverviewTab({
   docs: Doc[];
   reload: () => Promise<void>;
   note: (t: string) => void;
-  onUseCost: (amount: number) => void;
+  expenseTotal: number;
+  onUseVendorPrice: (pr: PriceReq) => void;
   onRepCreated: (r: Rep) => void;
 }) {
   const supabase = createClient();
@@ -614,16 +636,13 @@ function OverviewTab({
               placeholder="Flat number, all in"
             />
           </Field>
-          <Field label="Our cost" hint="Crew + vendors. Use a vendor price below to fill it.">
-            <input
-              type="number"
-              step="0.01"
-              value={project.cost ?? ""}
-              onChange={(e) =>
-                patch({ cost: e.target.value === "" ? null : Number(e.target.value) })
-              }
-              className="input"
-            />
+          <Field
+            label="Job cost so far"
+            hint="The sum of this job's expenses — add them on the Money tab."
+          >
+            <p className="nums input flex items-center bg-ink-50 font-semibold text-ink-700">
+              {money(expenseTotal)}
+            </p>
           </Field>
           <Field label="Notes" className="sm:col-span-2">
             <textarea
@@ -720,13 +739,9 @@ function OverviewTab({
                       <>
                         <span className="nums text-sm font-bold">{money(pr.amount)}</span>
                         <button
-                          onClick={() => {
-                            onUseCost(num(pr.amount));
-                            logActivity(supabase, project.id, "price",
-                              `Using ${pr.partner?.name ?? "vendor"}'s price as our cost: ${money(pr.amount)}`);
-                          }}
+                          onClick={() => onUseVendorPrice(pr)}
                           className="btn-primary btn-sm"
-                          title="Set as our cost"
+                          title="Add as a Job cost expense for this vendor"
                         >
                           Use
                         </button>
@@ -1125,6 +1140,7 @@ function MoneyTab({
   org,
   companyName,
   repName,
+  partners,
   reload,
 }: {
   project: Project;
@@ -1137,8 +1153,10 @@ function MoneyTab({
   org: Org | null;
   companyName: string | null;
   repName: string | null;
+  partners: Partner[];
   reload: () => Promise<void>;
 }) {
+  const supabase = createClient();
   const [editing, setEditing] = useState<Invoice | "new" | null>(null);
   const [expenseModal, setExpenseModal] = useState<Expense | "new" | null>(null);
 
@@ -1163,8 +1181,7 @@ function MoneyTab({
         <div className="nums grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm sm:grid-cols-3">
           <Line label="Price" value={money(project.price)} />
           <Line label="Approved extras" value={`+${money(approvedCOs)}`} />
-          <Line label="Our cost" value={`−${money(project.cost)}`} />
-          <Line label="Expenses" value={`−${money(expenseTotal)}`} />
+          <Line label="Job cost (expenses)" value={`−${money(expenseTotal)}`} />
           <div className="col-span-2 border-t border-ink-200 pt-1.5 sm:col-span-3" />
           <Line
             label="Profit"
@@ -1260,19 +1277,47 @@ function MoneyTab({
           <Empty title="No expenses" />
         ) : (
           <ul className="divide-y divide-ink-100">
-            {expenses.map((e) => (
-              <li
-                key={e.id}
-                onClick={() => setExpenseModal(e)}
-                className="flex cursor-pointer items-center justify-between px-5 py-2.5 hover:bg-ink-50"
-              >
-                <div>
-                  <p className="text-sm font-medium text-ink-900">{e.label}</p>
-                  <p className="muted text-xs">{shortDate(e.spent_at)}</p>
-                </div>
-                <span className="nums text-sm font-semibold">{money(e.amount)}</span>
-              </li>
-            ))}
+            {expenses.map((e) => {
+              const payee = e.partner?.name ?? e.client_company?.name ?? e.payee_name;
+              return (
+                <li
+                  key={e.id}
+                  onClick={() => setExpenseModal(e)}
+                  className="flex cursor-pointer items-center justify-between gap-3 px-5 py-2.5 hover:bg-ink-50"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-ink-900">{e.label}</p>
+                    <p className="muted truncate text-xs">
+                      {e.category}
+                      {payee ? ` · ${payee}` : ""} · {shortDate(e.spent_at)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      onClick={async (ev) => {
+                        ev.stopPropagation();
+                        await supabase
+                          .from("expense")
+                          .update({
+                            paid: !e.paid,
+                            paid_on: e.paid ? null : new Date().toISOString().slice(0, 10),
+                          })
+                          .eq("id", e.id);
+                        logActivity(supabase, project.id, "expense",
+                          `${e.label} marked ${e.paid ? "unpaid" : "paid"} — ${money(e.amount)}`);
+                        reload();
+                      }}
+                      title={e.paid ? "Mark unpaid" : "Mark paid"}
+                    >
+                      <Badge tone={e.paid ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}>
+                        {e.paid ? "paid" : "unpaid"}
+                      </Badge>
+                    </button>
+                    <span className="nums text-sm font-semibold">{money(e.amount)}</span>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
@@ -1297,6 +1342,9 @@ function MoneyTab({
         <ExpenseModal
           expense={expenseModal === "new" ? null : expenseModal}
           projectId={project.id}
+          partners={partners}
+          clientCompanyId={project.client_company_id}
+          clientCompanyName={companyName}
           onClose={() => setExpenseModal(null)}
           onSaved={async () => {
             setExpenseModal(null);
@@ -1779,14 +1827,25 @@ function InvoiceModal({
   );
 }
 
+/**
+ * The expense is the unit of job cost: what it was, which kind of cost,
+ * who it went to (crew/vendor from the directory, the client, or a typed
+ * name like a supply store), and whether it's been paid yet.
+ */
 function ExpenseModal({
   expense,
   projectId,
+  partners,
+  clientCompanyId,
+  clientCompanyName,
   onClose,
   onSaved,
 }: {
   expense: Expense | null;
   projectId: string;
+  partners: Partner[];
+  clientCompanyId: string | null;
+  clientCompanyName: string | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -1796,14 +1855,42 @@ function ExpenseModal({
   const [spentAt, setSpentAt] = useState(
     expense?.spent_at ?? new Date().toISOString().slice(0, 10),
   );
+  const [category, setCategory] = useState(expense?.category ?? "Job cost");
+  const [paid, setPaid] = useState(expense?.paid ?? false);
+  // One picker for "who it went to": a directory partner, the job's client,
+  // or a typed-in name (supply store, one-off plumber).
+  const [payee, setPayee] = useState(
+    expense?.partner_id
+      ? `p:${expense.partner_id}`
+      : expense?.client_company_id
+        ? "client"
+        : expense?.payee_name
+          ? "other"
+          : "",
+  );
+  const [payeeName, setPayeeName] = useState(expense?.payee_name ?? "");
+
+  const crews = partners.filter((p) => p.kind === "crew" || p.kind === "other");
+  const vendors = partners.filter((p) => p.kind !== "crew" && p.kind !== "other");
 
   async function save() {
     if (!label.trim()) return;
-    const row = { project_id: projectId, label: label.trim(), amount: num(amount), spent_at: spentAt || null };
+    const row = {
+      project_id: projectId,
+      label: label.trim(),
+      amount: num(amount),
+      spent_at: spentAt || null,
+      category,
+      partner_id: payee.startsWith("p:") ? payee.slice(2) : null,
+      client_company_id: payee === "client" ? clientCompanyId : null,
+      payee_name: payee === "other" && payeeName.trim() ? payeeName.trim() : null,
+      paid,
+      paid_on: paid ? (expense?.paid_on ?? new Date().toISOString().slice(0, 10)) : null,
+    };
     if (expense) await supabase.from("expense").update(row).eq("id", expense.id);
     else await supabase.from("expense").insert(row);
     logActivity(supabase, projectId, "expense",
-      `Expense ${expense ? "edited" : "added"}: ${row.label} — ${money(row.amount)}`);
+      `Expense ${expense ? "edited" : "added"}: ${row.label} — ${money(row.amount)} (${category}${paid ? ", paid" : ", unpaid"})`);
     onSaved();
   }
 
@@ -1839,6 +1926,57 @@ function ExpenseModal({
             <input type="date" value={spentAt} onChange={(e) => setSpentAt(e.target.value)} className="input" />
           </Field>
         </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Category">
+            <select value={category} onChange={(e) => setCategory(e.target.value)} className="input">
+              {EXPENSE_CATEGORIES.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+              {!EXPENSE_CATEGORIES.includes(category) ? (
+                <option value={category}>{category}</option>
+              ) : null}
+            </select>
+          </Field>
+          <Field label="Paid to">
+            <select value={payee} onChange={(e) => setPayee(e.target.value)} className="input">
+              <option value="">—</option>
+              {crews.length ? (
+                <optgroup label="Crews">
+                  {crews.map((p) => (
+                    <option key={p.id} value={`p:${p.id}`}>{p.name}</option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {vendors.length ? (
+                <optgroup label="Vendors">
+                  {vendors.map((p) => (
+                    <option key={p.id} value={`p:${p.id}`}>{p.name}</option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {clientCompanyId ? (
+                <optgroup label="Client">
+                  <option value="client">{clientCompanyName ?? "The client"}</option>
+                </optgroup>
+              ) : null}
+              <option value="other">Someone else…</option>
+            </select>
+          </Field>
+        </div>
+        {payee === "other" ? (
+          <Field label="Who">
+            <input
+              value={payeeName}
+              onChange={(e) => setPayeeName(e.target.value)}
+              className="input"
+              placeholder="Home Depot, plumber, …"
+            />
+          </Field>
+        ) : null}
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-800">
+          <input type="checkbox" checked={paid} onChange={(e) => setPaid(e.target.checked)} />
+          Already paid
+        </label>
       </div>
     </Modal>
   );

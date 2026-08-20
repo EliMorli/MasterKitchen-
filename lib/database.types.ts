@@ -295,25 +295,43 @@ export type Database = {
       expense: {
         Row: {
           amount: number
+          category: string
+          client_company_id: string | null
           created_at: string
           id: string
           label: string
+          paid: boolean
+          paid_on: string | null
+          partner_id: string | null
+          payee_name: string | null
           project_id: string
           spent_at: string | null
         }
         Insert: {
           amount?: number
+          category?: string
+          client_company_id?: string | null
           created_at?: string
           id?: string
           label: string
+          paid?: boolean
+          paid_on?: string | null
+          partner_id?: string | null
+          payee_name?: string | null
           project_id: string
           spent_at?: string | null
         }
         Update: {
           amount?: number
+          category?: string
+          client_company_id?: string | null
           created_at?: string
           id?: string
           label?: string
+          paid?: boolean
+          paid_on?: string | null
+          partner_id?: string | null
+          payee_name?: string | null
           project_id?: string
           spent_at?: string | null
         }
@@ -323,6 +341,20 @@ export type Database = {
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "project"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "expense_partner_id_fkey"
+            columns: ["partner_id"]
+            isOneToOne: false
+            referencedRelation: "partner"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "expense_client_company_id_fkey"
+            columns: ["client_company_id"]
+            isOneToOne: false
+            referencedRelation: "client_company"
             referencedColumns: ["id"]
           },
         ]
