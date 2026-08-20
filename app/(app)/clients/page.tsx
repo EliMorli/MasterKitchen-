@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { Badge, Empty, Field, Modal, Topbar } from "@/components/ui";
+import { Badge, Empty, Field, Modal, Table, Topbar } from "@/components/ui";
 import { PHASE_LABEL, PHASE_TONE, type Phase } from "@/lib/labels";
 import { money, num } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
@@ -20,6 +20,7 @@ type Proj = {
   price: number | null;
   cost: number | null;
   client_company_id: string | null;
+  contact_id: string | null;
   archived: boolean;
   created_at: string;
 };
@@ -52,13 +53,14 @@ export default function ClientsPage() {
   const [modal, setModal] = useState<Company | "new" | null>(null);
   const [repModal, setRepModal] = useState<{ companyId: string; rep: Rep | null } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState<"clients" | "reps">("clients");
 
   const load = useCallback(async () => {
     const [co, pr, inv, pay, cor, exp] = await Promise.all([
       supabase.from("client_company").select("*, contact(id, name, phone, email)").order("name"),
       supabase
         .from("project")
-        .select("id, address, phase, price, cost, client_company_id, archived, created_at"),
+        .select("id, address, phase, price, cost, client_company_id, contact_id, archived, created_at"),
       supabase.from("invoice").select("id, project_id, amount, status"),
       supabase.from("payment").select("invoice_id, amount"),
       supabase.from("change_order").select("project_id, amount, status"),
@@ -152,13 +154,35 @@ export default function ClientsPage() {
       <Topbar
         title="Clients"
         action={
-          <button onClick={() => setModal("new")} className="btn-brand">
-            <Plus size={16} /> New client
-          </button>
+          <div className="flex items-center gap-2">
+            <div className="flex rounded-lg border border-ink-200 p-0.5">
+              <button
+                onClick={() => setView("clients")}
+                className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
+                  view === "clients" ? "bg-ink-900 text-white" : "text-ink-500 hover:text-ink-800"
+                }`}
+              >
+                Clients
+              </button>
+              <button
+                onClick={() => setView("reps")}
+                className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
+                  view === "reps" ? "bg-ink-900 text-white" : "text-ink-500 hover:text-ink-800"
+                }`}
+              >
+                Reps
+              </button>
+            </div>
+            <button onClick={() => setModal("new")} className="btn-brand">
+              <Plus size={16} /> New client
+            </button>
+          </div>
         }
       />
 
-      {companies.length === 0 ? (
+      {view === "reps" ? (
+        <RepsBoard companies={companies} projects={projects} cos={cos} expenses={expenses} />
+      ) : companies.length === 0 ? (
         <div className="card">
           <Empty title={loading ? "Loading…" : "No clients yet"} />
         </div>
@@ -426,5 +450,135 @@ function RepModal({
         </Field>
       </div>
     </Modal>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+ * Reps — the scoreboard. Who actually brings the money in: not just how many
+ * jobs each rep sends, but what those jobs earn after expenses. Five fat jobs
+ * can beat ten thin ones; this is where you look before deciding who to
+ * take care of.
+ * ------------------------------------------------------------------------- */
+const REP_PERIODS = ["This month", "This year", "All time"] as const;
+type RepPeriod = (typeof REP_PERIODS)[number];
+
+function RepsBoard({
+  companies,
+  projects,
+  cos,
+  expenses,
+}: {
+  companies: Company[];
+  projects: Proj[];
+  cos: CO[];
+  expenses: Exp[];
+}) {
+  const [period, setPeriod] = useState<RepPeriod>("All time");
+
+  const rows = useMemo(() => {
+    const now = new Date();
+    const from =
+      period === "This month"
+        ? new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
+        : period === "This year"
+          ? new Date(now.getFullYear(), 0, 1).toISOString()
+          : null;
+
+    const approvedCoByProject = new Map<string, number>();
+    for (const c of cos)
+      if (c.status === "approved")
+        approvedCoByProject.set(c.project_id, (approvedCoByProject.get(c.project_id) ?? 0) + num(c.amount));
+    const expenseByProject = new Map<string, number>();
+    for (const e of expenses)
+      expenseByProject.set(e.project_id, (expenseByProject.get(e.project_id) ?? 0) + num(e.amount));
+
+    const repInfo = new Map<string, { name: string; company: string }>();
+    for (const c of companies)
+      for (const r of c.contact) repInfo.set(r.id, { name: r.name, company: c.name });
+
+    const byRep = new Map<string, { jobs: number; revenue: number; cost: number }>();
+    let unassigned = 0;
+    for (const p of projects) {
+      if (from && p.created_at < from) continue;
+      if (!p.contact_id || !repInfo.has(p.contact_id)) {
+        unassigned++;
+        continue;
+      }
+      const agg = byRep.get(p.contact_id) ?? { jobs: 0, revenue: 0, cost: 0 };
+      agg.jobs++;
+      agg.revenue += num(p.price) + (approvedCoByProject.get(p.id) ?? 0);
+      agg.cost += expenseByProject.get(p.id) ?? 0;
+      byRep.set(p.contact_id, agg);
+    }
+
+    const list = [...byRep.entries()].map(([id, a]) => ({
+      id,
+      name: repInfo.get(id)!.name,
+      company: repInfo.get(id)!.company,
+      jobs: a.jobs,
+      revenue: a.revenue,
+      cost: a.cost,
+      profit: a.revenue - a.cost,
+      margin: a.revenue > 0 ? Math.round(((a.revenue - a.cost) / a.revenue) * 1000) / 10 : null,
+    }));
+    // The scoreboard ranks by profit brought in — volume is visible, but
+    // money decides the order.
+    list.sort((a, b) => b.profit - a.profit || b.jobs - a.jobs);
+    return { list, unassigned };
+  }, [companies, projects, cos, expenses, period]);
+
+  const MEDALS = ["🥇", "🥈", "🥉"];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex rounded-lg border border-ink-200 bg-white p-0.5 w-fit">
+        {REP_PERIODS.map((p) => (
+          <button
+            key={p}
+            onClick={() => setPeriod(p)}
+            className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+              period === p ? "bg-brand-600 text-white" : "text-ink-500 hover:text-ink-800"
+            }`}
+          >
+            {p}
+          </button>
+        ))}
+      </div>
+
+      {rows.list.length === 0 ? (
+        <div className="card">
+          <Empty
+            title="No jobs linked to reps yet"
+            hint="Pick the sales rep on each job — the scoreboard builds itself from there."
+          />
+        </div>
+      ) : (
+        <Table head={["#", "Rep", "Jobs", "Revenue", "Job cost", "Profit", "Margin"]} minWidth={760}>
+          {rows.list.map((r, i) => (
+            <tr key={r.id} className={i === 0 ? "bg-amber-50/60" : "hover:bg-ink-50"}>
+              <td className="td nums text-ink-500">{MEDALS[i] ?? i + 1}</td>
+              <td className="td">
+                <p className="font-semibold text-ink-900">{r.name}</p>
+                <p className="muted text-xs">{r.company}</p>
+              </td>
+              <td className="td nums">{r.jobs}</td>
+              <td className="td nums">{money(r.revenue)}</td>
+              <td className="td nums text-ink-500">{r.cost ? `−${money(r.cost)}` : "—"}</td>
+              <td className={`td nums font-bold ${r.profit >= 0 ? "text-emerald-700" : "text-red-600"}`}>
+                {money(r.profit)}
+              </td>
+              <td className="td nums text-ink-600">{r.margin != null ? `${r.margin}%` : "—"}</td>
+            </tr>
+          ))}
+        </Table>
+      )}
+
+      {rows.unassigned > 0 ? (
+        <p className="muted text-xs">
+          {rows.unassigned} job{rows.unassigned === 1 ? " has" : "s have"} no rep picked — they
+          don&apos;t count here until someone sets the sales rep on the job.
+        </p>
+      ) : null}
+    </div>
   );
 }
