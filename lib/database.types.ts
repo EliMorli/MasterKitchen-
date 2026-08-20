@@ -367,6 +367,7 @@ export type Database = {
           due_at: string | null
           id: string
           issued_at: string | null
+          line_items: Json
           number: string
           paid_at: string | null
           project_id: string
@@ -379,6 +380,7 @@ export type Database = {
           due_at?: string | null
           id?: string
           issued_at?: string | null
+          line_items?: Json
           number: string
           paid_at?: string | null
           project_id: string
@@ -391,6 +393,7 @@ export type Database = {
           due_at?: string | null
           id?: string
           issued_at?: string | null
+          line_items?: Json
           number?: string
           paid_at?: string | null
           project_id?: string

@@ -2,7 +2,7 @@
 
 import { use, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, Circle, Copy, ExternalLink, Paperclip, Plus, Trash2 } from "lucide-react";
+import { CheckCircle2, Circle, Copy, ExternalLink, FileUp, Paperclip, Plus, Sparkles, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Badge, Empty, Field, Modal } from "@/components/ui";
 import { CO_TONE, DOC_TAGS, EVENT_PRESETS, EXPENSE_CATEGORIES, PHASES, TRADES, type Phase } from "@/lib/labels";
@@ -19,6 +19,7 @@ type DB = Database["public"]["Tables"];
 type Project = DB["project"]["Row"];
 type Event = DB["event"]["Row"] & { partner: { name: string } | null };
 type Invoice = DB["invoice"]["Row"];
+type LineItem = { description: string; amount: number };
 type Expense = DB["expense"]["Row"] & {
   partner: { name: string } | null;
   client_company: { name: string } | null;
@@ -1404,11 +1405,16 @@ function InvoiceModal({
   const supabase = createClient();
   const [form, setForm] = useState({
     number: invoice?.number ?? nextNumber,
-    description: invoice?.description ?? "",
-    amount: invoice?.amount ?? 0,
     status: invoice?.status ?? ("draft" as Invoice["status"]),
     issued_at: invoice?.issued_at ?? new Date().toISOString().slice(0, 10),
     due_at: invoice?.due_at ?? "",
+  });
+  // The invoice body is its rows. Older invoices without stored rows open as
+  // one row carrying their description + amount, so editing keeps working.
+  const [items, setItems] = useState<LineItem[]>(() => {
+    const stored = (invoice?.line_items as unknown as LineItem[] | null) ?? [];
+    if (stored.length) return stored.map((it) => ({ ...it, amount: num(it.amount) }));
+    return [{ description: invoice?.description ?? "", amount: num(invoice?.amount ?? 0) }];
   });
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<Payment["method"]>("check");
@@ -1418,11 +1424,86 @@ function InvoiceModal({
   const [busy, setBusy] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
 
+  // PDF import (new invoices only): the old system's invoice prefills the
+  // form, and any payment it shows is recorded on save.
+  const [importing, setImporting] = useState(false);
+  const [importErr, setImportErr] = useState("");
+  const [importSummary, setImportSummary] = useState("");
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [pendingPayment, setPendingPayment] = useState<{ amount: number; date: string } | null>(null);
+
+  const total = items.reduce((s, it) => s + num(it.amount), 0);
   const paid = payments.reduce((s, p) => s + num(p.amount), 0);
-  const balance = num(form.amount) - paid;
+  const balance = total - paid;
 
   function set<K extends keyof typeof form>(k: K, v: (typeof form)[K]) {
     setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  async function importPdf(file: File) {
+    if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
+      setImportErr("That's not a PDF.");
+      return;
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      setImportErr("That PDF is over 4MB — try a smaller one.");
+      return;
+    }
+    setImportErr("");
+    setImporting(true);
+    try {
+      const b64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      const res = await fetch("/api/invoice-intake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdf: b64 }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Could not read the PDF.");
+      const x = body.extracted as {
+        number: string | null;
+        issued_at: string | null;
+        due_at: string | null;
+        line_items: LineItem[];
+        total: number | null;
+        amount_paid: number | null;
+        paid_date: string | null;
+        summary: string;
+      };
+      const rows: LineItem[] = (x.line_items ?? [])
+        .filter((it) => it.description || num(it.amount))
+        .map((it) => ({ description: String(it.description ?? ""), amount: num(it.amount) }));
+      if (rows.length === 0 && x.total != null) {
+        rows.push({ description: "As invoiced", amount: num(x.total) });
+      }
+      if (rows.length) setItems(rows);
+      setForm((f) => ({
+        ...f,
+        number: x.number?.trim() || f.number,
+        issued_at: x.issued_at ?? f.issued_at,
+        due_at: x.due_at ?? f.due_at,
+        // An imported invoice already went out — never a draft.
+        status: "sent",
+      }));
+      const rowTotal = rows.reduce((s, it) => s + num(it.amount), 0);
+      const paidAmt = Math.min(num(x.amount_paid ?? 0), rowTotal || num(x.total ?? 0));
+      setPendingPayment(
+        paidAmt > 0
+          ? { amount: paidAmt, date: x.paid_date ?? x.issued_at ?? new Date().toISOString().slice(0, 10) }
+          : null,
+      );
+      setImportFile(file);
+      setImportSummary(x.summary || "Read the PDF — check the fields below.");
+    } catch (e) {
+      setImportErr(e instanceof Error ? e.message : "Could not read the PDF.");
+    } finally {
+      setImporting(false);
+    }
   }
 
   /**
@@ -1433,7 +1514,14 @@ function InvoiceModal({
    */
   async function refreshPdf(
     invoiceId: string,
-    snap: { number: string; description: string | null; amount: number; issued_at: string | null; due_at: string | null },
+    snap: {
+      number: string;
+      description: string | null;
+      line_items: LineItem[];
+      amount: number;
+      issued_at: string | null;
+      due_at: string | null;
+    },
     currentPayments: Payment[],
   ) {
     const blob = buildInvoicePdf({
@@ -1448,6 +1536,7 @@ function InvoiceModal({
       jobAddress: [project.address, project.city].filter(Boolean).join(", "),
       number: snap.number,
       description: snap.description,
+      lineItems: snap.line_items,
       amount: snap.amount,
       issuedAt: snap.issued_at,
       dueAt: snap.due_at,
@@ -1523,6 +1612,7 @@ function InvoiceModal({
       {
         number: inv.number,
         description: inv.description,
+        line_items: ((inv.line_items as unknown as LineItem[] | null) ?? []),
         amount,
         issued_at: inv.issued_at,
         due_at: inv.due_at,
@@ -1533,11 +1623,17 @@ function InvoiceModal({
 
   async function save() {
     setSaving(true);
+    const cleanItems = items
+      .map((it) => ({ description: it.description.trim(), amount: num(it.amount) }))
+      .filter((it) => it.description || it.amount);
+    // description stays a one-line summary of the rows so lists keep reading well.
     const row = {
       project_id: project.id,
       number: form.number.trim(),
-      description: form.description.trim() || null,
-      amount: num(form.amount),
+      description:
+        cleanItems.map((it) => it.description).filter(Boolean).join(" · ").slice(0, 300) || null,
+      line_items: cleanItems,
+      amount: cleanItems.reduce((s, it) => s + it.amount, 0),
       status: form.status,
       issued_at: form.issued_at || null,
       due_at: form.due_at || null,
@@ -1546,7 +1642,7 @@ function InvoiceModal({
     let saved: Invoice | null = invoice;
     if (invoice) {
       await supabase.from("invoice").update(row).eq("id", invoice.id);
-      saved = { ...invoice, ...row };
+      saved = { ...invoice, ...row } as unknown as Invoice;
       const changed =
         num(invoice.amount) !== row.amount
           ? `: ${money(invoice.amount)} → ${money(row.amount)}`
@@ -1557,6 +1653,36 @@ function InvoiceModal({
       saved = (data as Invoice) ?? null;
       logActivity(supabase, project.id, "invoice",
         `Invoice ${row.number} created — ${money(row.amount)}`);
+
+      if (saved && importFile) {
+        // The old system's PDF is filed next to the regenerated one — the
+        // paper trail survives the migration.
+        const path = `${project.id}/invoices/${saved.id}-original.pdf`;
+        const { error: upErr } = await supabase.storage
+          .from("documents")
+          .upload(path, importFile, { contentType: "application/pdf", upsert: true });
+        if (!upErr) {
+          await supabase.from("document").insert({
+            project_id: project.id,
+            name: `${row.number} (original).pdf`,
+            tag: "invoice",
+            storage_path: path,
+          });
+        }
+      }
+      if (saved && pendingPayment) {
+        // The payment the old invoice already showed comes along with it.
+        await supabase.from("payment").insert({
+          invoice_id: saved.id,
+          project_id: project.id,
+          amount: pendingPayment.amount,
+          method: "other",
+          paid_on: pendingPayment.date,
+          note: "Imported with the invoice PDF",
+        });
+        logActivity(supabase, project.id, "payment",
+          `Payment recorded on ${row.number}: ${moneyExact(pendingPayment.amount)} (imported from PDF)`);
+      }
     }
 
     // Editing the amount can change whether existing payments cover it, so
@@ -1693,26 +1819,54 @@ function InvoiceModal({
         </>
       }
     >
+      {!invoice ? (
+        importSummary ? (
+          <div className="mb-4 flex items-start gap-2 rounded-lg bg-violet-50 px-3 py-2.5 text-sm text-violet-900 ring-1 ring-violet-200">
+            <Sparkles size={15} className="mt-0.5 shrink-0 text-violet-700" />
+            <div>
+              <p className="font-medium">{importSummary}</p>
+              <p className="text-xs text-violet-700">
+                {pendingPayment
+                  ? `A payment of ${moneyExact(pendingPayment.amount)} (${shortDate(pendingPayment.date)}) is recorded when you save. `
+                  : ""}
+                The original PDF is filed on the job&apos;s Documents.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <label
+            className={`mb-4 flex cursor-pointer items-center gap-3 rounded-lg border-2 border-dashed border-ink-200 px-4 py-3 text-sm text-ink-500 transition-colors hover:border-brand-400 hover:text-ink-700`}
+          >
+            <FileUp size={18} className="shrink-0" />
+            {importing ? (
+              <span className="animate-pulse font-medium">Reading the PDF…</span>
+            ) : (
+              <span>
+                <span className="font-medium text-ink-800">Migrating an old invoice?</span> Drop or
+                pick its PDF — number, rows, dates and any payment come in by themselves.
+              </span>
+            )}
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              className="hidden"
+              disabled={importing}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) importPdf(f);
+                e.target.value = "";
+              }}
+            />
+          </label>
+        )
+      ) : null}
+      {importErr ? (
+        <p className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">{importErr}</p>
+      ) : null}
+
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Number">
           <input value={form.number} onChange={(e) => set("number", e.target.value)} className="input" />
-        </Field>
-        <Field label="Amount">
-          <input
-            type="number"
-            step="0.01"
-            value={form.amount}
-            onChange={(e) => set("amount", Number(e.target.value))}
-            className="input font-semibold"
-          />
-        </Field>
-        <Field label="Description" className="sm:col-span-2">
-          <input
-            value={form.description}
-            onChange={(e) => set("description", e.target.value)}
-            className="input"
-            placeholder="Design · Demo complete · Final…"
-          />
         </Field>
         <Field label="Lifecycle">
           <select
@@ -1731,6 +1885,55 @@ function InvoiceModal({
         <Field label="Due">
           <input type="date" value={form.due_at} onChange={(e) => set("due_at", e.target.value)} className="input" />
         </Field>
+      </div>
+
+      {/* The rows ARE the invoice: description + amount each, add as needed.
+          The total is their sum — no separate amount field to drift. */}
+      <div className="mt-4">
+        <label className="label">Lines</label>
+        <div className="space-y-2">
+          {items.map((it, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input
+                value={it.description}
+                onChange={(e) =>
+                  setItems((prev) => prev.map((x, j) => (j === i ? { ...x, description: e.target.value } : x)))
+                }
+                className="input flex-1"
+                placeholder={i === 0 ? "Demo complete — milestone 2" : "Another line…"}
+              />
+              <input
+                type="number"
+                step="0.01"
+                value={it.amount}
+                onChange={(e) =>
+                  setItems((prev) => prev.map((x, j) => (j === i ? { ...x, amount: Number(e.target.value) } : x)))
+                }
+                className="input w-32 text-right"
+              />
+              <button
+                onClick={() => setItems((prev) => prev.filter((_, j) => j !== i))}
+                disabled={items.length === 1}
+                className="text-ink-300 hover:text-red-600 disabled:opacity-30"
+                aria-label="Remove line"
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 flex items-center justify-between">
+          <button
+            onClick={() => setItems((prev) => [...prev, { description: "", amount: 0 }])}
+            className="text-xs font-semibold text-brand-700 hover:bg-brand-50 rounded-md px-2 py-1"
+          >
+            + Add row
+          </button>
+          <p className="nums text-sm">
+            <span className="text-ink-500">Total </span>
+            <span className="font-bold text-ink-900">{moneyExact(total)}</span>
+          </p>
+        </div>
       </div>
 
       {invoice ? (

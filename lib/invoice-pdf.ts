@@ -13,6 +13,8 @@ export type InvoicePdfInput = {
   jobAddress: string;
   number: string;
   description?: string | null;
+  /** One row per line; when present these render instead of `description`. */
+  lineItems?: { description: string; amount: number }[];
   amount: number;
   issuedAt?: string | null;
   dueAt?: string | null;
@@ -124,15 +126,26 @@ export function buildInvoicePdf(input: InvoicePdfInput): Blob {
   doc.text("AMOUNT", W - M - 12, y + 17, { align: "right" });
   y += 26;
 
-  const desc = input.description || "Kitchen — as agreed, all in";
-  const descLines = doc.splitTextToSize(desc, W - 2 * M - 140) as string[];
-  const rowH = Math.max(34, 16 + descLines.length * 14);
-  doc.setFont("helvetica", "normal").setFontSize(10.5).setTextColor(...INK);
-  doc.text(descLines, M + 12, y + 21);
-  doc.setFont("helvetica", "bold");
-  doc.text(moneyExact(input.amount), W - M - 12, y + 21, { align: "right" });
-  y += rowH;
-  doc.setDrawColor(...LINE).setLineWidth(1).line(M, y, W - M, y);
+  const items =
+    input.lineItems && input.lineItems.length > 0
+      ? input.lineItems
+      : [{ description: input.description || "Kitchen — as agreed, all in", amount: input.amount }];
+  for (const [idx, item] of items.entries()) {
+    const descLines = doc.splitTextToSize(
+      item.description || "—",
+      W - 2 * M - 140,
+    ) as string[];
+    const rowH = Math.max(34, 16 + descLines.length * 14);
+    doc.setFont("helvetica", "normal").setFontSize(10.5).setTextColor(...INK);
+    doc.text(descLines, M + 12, y + 21);
+    doc.setFont("helvetica", items.length > 1 ? "normal" : "bold");
+    doc.text(moneyExact(Number(item.amount)), W - M - 12, y + 21, { align: "right" });
+    y += rowH;
+    doc
+      .setDrawColor(...LINE)
+      .setLineWidth(idx === items.length - 1 ? 1 : 0.5)
+      .line(M, y, W - M, y);
+  }
 
   /* ------------------------------------------------ totals block (right) */
   y += 24;
