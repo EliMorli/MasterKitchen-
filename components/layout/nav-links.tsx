@@ -11,7 +11,7 @@ export function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
     <div className="space-y-6">
       {NAV_GROUPS.map((group) => (
         <div key={group.heading}>
-          <p className="mb-1.5 px-3 text-[10px] font-bold uppercase tracking-widest text-ink-500">
+          <p className="mb-1.5 px-3 text-[11px] font-bold uppercase tracking-widest text-ink-400">
             {group.heading}
           </p>
           <ul className="space-y-0.5">
@@ -20,13 +20,13 @@ export function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
                 <Link
                   href={href}
                   onClick={onNavigate}
-                  className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-[15px] transition-colors ${
+                  className={`flex items-center gap-3 rounded-lg px-3 py-3 text-[16px] font-medium transition-colors ${
                     isActive(pathname, href)
                       ? "bg-ink-800 font-semibold text-white"
-                      : "text-ink-300 hover:bg-ink-800/60 hover:text-white"
+                      : "text-ink-200 hover:bg-ink-800/60 hover:text-white"
                   }`}
                 >
-                  <Icon size={18} strokeWidth={2} className="shrink-0" />
+                  <Icon size={20} strokeWidth={2} className="shrink-0" />
                   {label}
                 </Link>
               </li>
@@ -41,12 +41,12 @@ export function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
 export function Wordmark() {
   return (
     <div className="flex items-center gap-2.5">
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-500 text-sm font-black text-ink-900">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-500 text-sm font-black text-ink-900">
         MK
       </span>
       <div className="min-w-0">
-        <p className="truncate text-sm font-bold leading-none text-white">Master Kitchen</p>
-        <p className="mt-0.5 text-[11px] leading-none text-ink-400">Operations</p>
+        <p className="truncate text-[15px] font-bold leading-none text-white">Master Kitchen</p>
+        <p className="mt-1 text-[11px] leading-none text-ink-300">Operations</p>
       </div>
     </div>
   );

@@ -8,9 +8,9 @@
   --color-ink-100: #f4f2ee;
   --color-ink-200: #e8e5df;
   --color-ink-300: #d4cfc6;
-  --color-ink-400: #a49e93;
-  --color-ink-500: #78726a;
-  --color-ink-600: #57524b;
+  --color-ink-400: #918a7e;
+  --color-ink-500: #625c53;
+  --color-ink-600: #4a453f;
   --color-ink-700: #44403a;
   --color-ink-800: #2b2723;
   --color-ink-900: #1a1713;
@@ -56,11 +56,11 @@ body {
   }
 
   .label {
-    @apply mb-1.5 block text-xs font-semibold uppercase tracking-wide text-ink-500;
+    @apply mb-1.5 block text-xs font-semibold uppercase tracking-wide text-ink-600;
   }
 
   .input {
-    @apply w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-sm text-ink-900
+    @apply w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-[15px] text-ink-900
            placeholder:text-ink-400 focus:border-brand-500 focus:outline-none
            focus:ring-2 focus:ring-brand-500/20;
   }
@@ -98,11 +98,11 @@ body {
   }
 
   .th {
-    @apply px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-ink-500;
+    @apply px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-ink-600;
   }
 
   .td {
-    @apply px-4 py-3 text-sm text-ink-800;
+    @apply px-4 py-3 text-[15px] text-ink-900;
   }
 
   .row-link {
@@ -114,7 +114,7 @@ body {
   }
 
   .h2 {
-    @apply text-base font-semibold text-ink-900;
+    @apply text-[17px] font-semibold text-ink-900;
   }
 
   .muted {
