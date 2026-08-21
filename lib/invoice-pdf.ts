@@ -21,17 +21,17 @@ export type InvoicePdfInput = {
   payments: { amount: number; method: string; paid_on: string }[];
 };
 
-// The app's palette, carried onto paper.
-const INK = [15, 23, 42] as const; // ink-900
-const SLATE = [100, 116, 139] as const; // ink-500
-const FAINT = [148, 163, 184] as const; // ink-400
-const LINE = [226, 232, 240] as const; // ink-200
-const WASH = [248, 250, 252] as const; // ink-50
-const BRAND = [245, 158, 11] as const; // brand-500
-const BRAND_DARK = [180, 83, 9] as const; // brand-700
+// The app's palette, carried onto paper — Champagne & Ebony.
+const INK = [26, 23, 19] as const; // ink-900 ebony
+const SLATE = [120, 114, 106] as const; // ink-500 warm gray
+const FAINT = [164, 158, 147] as const; // ink-400
+const LINE = [232, 229, 223] as const; // ink-200
+const WASH = [250, 249, 247] as const; // ink-50 ivory
+const BRAND = [163, 129, 79] as const; // brand-500 champagne
+const BRAND_DARK = [113, 84, 51] as const; // brand-700
 const GREEN = [5, 150, 105] as const;
 const GREEN_WASH = [236, 253, 245] as const;
-const BRAND_WASH = [255, 251, 235] as const; // brand-50
+const BRAND_WASH = [250, 246, 238] as const; // brand-50
 
 /**
  * The invoice as a document worth putting in front of a GC: brand band on top,

@@ -8,7 +8,7 @@ export type Phase = Database["public"]["Enums"]["phase"];
  */
 export const PHASES: { key: Phase; label: string; dot: string; column: string }[] = [
   { key: "new",         label: "New",         dot: "bg-ink-400",     column: "border-ink-300" },
-  { key: "design",      label: "Design",      dot: "bg-sky-500",     column: "border-sky-300" },
+  { key: "design",      label: "Design",      dot: "bg-rose-400",    column: "border-rose-300" },
   { key: "pricing",     label: "Pricing",     dot: "bg-violet-500",  column: "border-violet-300" },
   { key: "approved",    label: "Approved",    dot: "bg-brand-500",   column: "border-brand-400" },
   { key: "in_progress", label: "In progress", dot: "bg-emerald-500", column: "border-emerald-300" },
@@ -23,7 +23,7 @@ export const PHASE_LABEL = Object.fromEntries(PHASES.map((p) => [p.key, p.label]
 
 export const PHASE_TONE: Record<Phase, string> = {
   new: "bg-ink-100 text-ink-700",
-  design: "bg-sky-100 text-sky-800",
+  design: "bg-rose-100 text-rose-800",
   pricing: "bg-violet-100 text-violet-800",
   approved: "bg-brand-100 text-brand-700",
   in_progress: "bg-emerald-100 text-emerald-800",
@@ -33,7 +33,7 @@ export const PHASE_TONE: Record<Phase, string> = {
 
 export const INVOICE_TONE: Record<Database["public"]["Enums"]["invoice_status"], string> = {
   draft: "bg-ink-100 text-ink-700",
-  sent: "bg-sky-100 text-sky-800",
+  sent: "bg-brand-100 text-brand-700",
   paid: "bg-emerald-100 text-emerald-800",
 };
 
@@ -78,7 +78,7 @@ export const PARTNER_KINDS = [
  */
 export const LEAD_STAGES: { key: string; label: string; dot: string; column: string }[] = [
   { key: "new",         label: "New",         dot: "bg-ink-400",     column: "border-ink-300" },
-  { key: "contacted",   label: "Contacted",   dot: "bg-sky-500",     column: "border-sky-300" },
+  { key: "contacted",   label: "Contacted",   dot: "bg-rose-400",    column: "border-rose-300" },
   { key: "appointment", label: "Appointment", dot: "bg-violet-500",  column: "border-violet-300" },
   { key: "follow_up",   label: "Follow-up",   dot: "bg-brand-500",   column: "border-brand-400" },
   { key: "won",         label: "Won",         dot: "bg-emerald-500", column: "border-emerald-300" },

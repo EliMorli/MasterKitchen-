@@ -72,9 +72,9 @@ export default function MoneyPage() {
     const paid = paidByInvoice.get(i.id) ?? 0;
     if (i.status === "draft" && paid === 0) return { label: "draft", tone: "bg-ink-100 text-ink-700" };
     if (balanceOf(i) === 0 && num(i.amount) > 0) return { label: "paid", tone: "bg-emerald-100 text-emerald-800" };
-    if (paid > 0) return { label: "partial", tone: "bg-brand-100 text-brand-700" };
+    if (paid > 0) return { label: "partial", tone: "bg-violet-100 text-violet-700" };
     if (i.due_at && i.due_at < today) return { label: "overdue", tone: "bg-red-100 text-red-700" };
-    return { label: "sent", tone: "bg-sky-100 text-sky-800" };
+    return { label: "sent", tone: "bg-brand-100 text-brand-700" };
   }
 
   // Click a column to sort; click again to flip. Default: newest invoice first.
@@ -173,7 +173,7 @@ export default function MoneyPage() {
         <StatCard
           label="Unpaid costs"
           value={money(unpaidCosts)}
-          tone={unpaidCosts ? "text-amber-700" : "text-ink-900"}
+          tone={unpaidCosts ? "text-brand-700" : "text-ink-900"}
           hint="expenses not yet paid out"
         />
         <StatCard
@@ -294,7 +294,7 @@ export default function MoneyPage() {
                   <td className="td nums font-semibold">{money(e.amount)}</td>
                   <td className="td">
                     <button onClick={() => togglePaid(e)} title={e.paid ? "Mark unpaid" : "Mark paid"}>
-                      <Badge tone={e.paid ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}>
+                      <Badge tone={e.paid ? "bg-emerald-100 text-emerald-800" : "bg-brand-100 text-brand-700"}>
                         {e.paid ? "paid" : "unpaid"}
                       </Badge>
                     </button>

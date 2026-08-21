@@ -555,7 +555,7 @@ function RepsBoard({
       ) : (
         <Table head={["#", "Rep", "Jobs", "Revenue", "Job cost", "Profit", "Margin"]} minWidth={760}>
           {rows.list.map((r, i) => (
-            <tr key={r.id} className={i === 0 ? "bg-amber-50/60" : "hover:bg-ink-50"}>
+            <tr key={r.id} className={i === 0 ? "bg-brand-50/60" : "hover:bg-ink-50"}>
               <td className="td nums text-ink-500">{MEDALS[i] ?? i + 1}</td>
               <td className="td">
                 <p className="font-semibold text-ink-900">{r.name}</p>

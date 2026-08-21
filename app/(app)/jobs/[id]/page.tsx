@@ -1124,10 +1124,10 @@ function invoiceStatus(i: Invoice, payments: Payment[]) {
   const balance = num(i.amount) - paid;
   if (i.status === "draft" && paid === 0) return { label: "draft", tone: "bg-ink-100 text-ink-700", paid, balance };
   if (balance <= 0 && num(i.amount) > 0) return { label: "paid", tone: "bg-emerald-100 text-emerald-800", paid, balance: 0 };
-  if (paid > 0) return { label: "partial", tone: "bg-brand-100 text-brand-700", paid, balance };
+  if (paid > 0) return { label: "partial", tone: "bg-violet-100 text-violet-700", paid, balance };
   if (i.due_at && i.due_at < new Date().toISOString().slice(0, 10))
     return { label: "overdue", tone: "bg-red-100 text-red-800", paid, balance };
-  return { label: "sent", tone: "bg-sky-100 text-sky-800", paid, balance };
+  return { label: "sent", tone: "bg-brand-100 text-brand-700", paid, balance };
 }
 
 function MoneyTab({
@@ -1310,7 +1310,7 @@ function MoneyTab({
                       }}
                       title={e.paid ? "Mark unpaid" : "Mark paid"}
                     >
-                      <Badge tone={e.paid ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}>
+                      <Badge tone={e.paid ? "bg-emerald-100 text-emerald-800" : "bg-brand-100 text-brand-700"}>
                         {e.paid ? "paid" : "unpaid"}
                       </Badge>
                     </button>
@@ -2452,7 +2452,7 @@ const ACT_TONE: Record<string, string> = {
   price: "text-emerald-700",
   crew: "text-ink-900",
   wa_in: "text-ink-900",
-  wa_out: "text-sky-700",
+  wa_out: "text-brand-700",
   phase: "text-brand-700",
   rating: "text-brand-700",
 };
