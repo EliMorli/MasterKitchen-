@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/database.types";
+import { createPublicClient } from "@/lib/supabase/public";
+
+export const maxDuration = 15;
 
 /**
  * Webhook intake for ad platforms: point Meta Lead Ads (via its webhook or
@@ -23,7 +24,12 @@ const pick = (body: Record<string, unknown>, keys: string[]): string => {
 export async function POST(request: NextRequest) {
   let body: Record<string, unknown>;
   try {
-    body = await request.json();
+    const parsed: unknown = await request.json();
+    // `null`, arrays and scalars are valid JSON but not a lead payload.
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return NextResponse.json({ ok: false, error: "invalid json" }, { status: 400 });
+    }
+    body = parsed as Record<string, unknown>;
   } catch {
     return NextResponse.json({ ok: false, error: "invalid json" }, { status: 400 });
   }
@@ -48,11 +54,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "name and phone are required" }, { status: 400 });
   }
 
-  const supabase = createClient<Database>(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { auth: { persistSession: false } },
-  );
+  const supabase = createPublicClient();
 
   const { data, error } = await supabase.rpc("lead_intake", {
     p_name: last ? `${name} ${last}` : name,

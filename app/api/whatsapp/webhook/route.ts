@@ -1,16 +1,19 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { createPublicClient } from "@/lib/supabase/public";
+import type { Database } from "@/lib/database.types";
+
+export const maxDuration = 60;
 
 /**
  * Verify Meta's payload signature. Meta signs the raw body with the app secret
- * as `X-Hub-Signature-256: sha256=<hex>`. When WHATSAPP_APP_SECRET is set we
- * enforce it (so only Meta can drive the ingest); when it isn't configured yet
- * we don't block — the wa_ingest RPC still checks the shared verify token.
+ * as `X-Hub-Signature-256: sha256=<hex>`. Fails CLOSED: until
+ * WHATSAPP_APP_SECRET is configured, no POST is accepted — the verify token
+ * alone is shared with Meta's console and is not proof the caller is Meta.
  */
 function signatureOk(raw: string, header: string | null): boolean {
   const secret = process.env.WHATSAPP_APP_SECRET;
-  if (!secret) return true; // not configured — fall back to the RPC's token check
+  if (!secret) return false;
   if (!header?.startsWith("sha256=")) return false;
   const expected = createHmac("sha256", secret).update(raw).digest("hex");
   const got = header.slice("sha256=".length);
@@ -71,6 +74,10 @@ export async function POST(request: NextRequest) {
 
     // Walk the standard envelope: entry[].changes[].value.messages[]. Guard
     // every level with Array.isArray so a non-iterable shape can't throw.
+    // Collect first, ingest in parallel — Meta batches, and a serial loop of
+    // RPCs would run into the function timeout and silently drop the tail.
+    const calls: Database["public"]["Functions"]["wa_ingest"]["Args"][] = [];
+    const MAX_MESSAGES = 200;
     const entries = (body as { entry?: unknown }).entry;
     for (const entry of Array.isArray(entries) ? entries : []) {
       const changes = (entry as { changes?: unknown }).changes;
@@ -80,8 +87,8 @@ export async function POST(request: NextRequest) {
         const messages = Array.isArray(value?.messages) ? value!.messages! : [];
         for (const msg of messages) {
           const text = msg.text?.body ?? "";
-          if (!text) continue;
-          await supabase.rpc("wa_ingest", {
+          if (!text || calls.length >= MAX_MESSAGES) continue;
+          calls.push({
             p_secret: secret,
             p_wamid: msg.id ?? "",
             p_group: msg.group_id ?? msg.context?.group_id ?? "",
@@ -92,6 +99,7 @@ export async function POST(request: NextRequest) {
         }
       }
     }
+    await Promise.all(calls.map((args) => supabase.rpc("wa_ingest", args)));
   } catch {
     // swallow — a 200 stops Meta from hammering a permanently-bad payload
   }

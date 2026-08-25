@@ -23,8 +23,8 @@ immediately:
 | `elimadmorli@gmail.com` | Owner |
 | `office@masterkitchen.app` | Data logger |
 
-Both have the temporary password **`MasterKitchen2026!`**. Change them on first
-sign-in.
+Passwords are handed over privately — never committed to this repo. Change
+them on first sign-in.
 
 ## Vercel — import the repo
 

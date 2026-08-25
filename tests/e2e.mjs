@@ -9,9 +9,13 @@ import fs from "node:fs";
 //   BASE=http://localhost:3100 CHROME_PATH=… node tests/e2e.mjs
 
 const BASE = process.env.BASE ?? "http://localhost:3100";
-const EMAIL = process.env.E2E_EMAIL ?? "elimadmorli@gmail.com";
-const PASSWORD = process.env.E2E_PASSWORD ?? "MasterKitchen2026!";
+const EMAIL = process.env.E2E_EMAIL;
+const PASSWORD = process.env.E2E_PASSWORD;
 const SHOTS = process.env.SHOTS ?? "/tmp/mk-e2e";
+if (!EMAIL || !PASSWORD) {
+  console.error("Set E2E_EMAIL and E2E_PASSWORD — credentials are never stored in the repo.");
+  process.exit(1);
+}
 
 // A tiny PDF fixture: the design file a vendor sees from their price link.
 fs.mkdirSync(SHOTS, { recursive: true });

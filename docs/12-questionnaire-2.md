@@ -7,7 +7,7 @@ exists now and you can click it**, so most of these are best answered with it op
 front of you. Short answers are fine. The ★ ones change the most.
 
 👉 **[master-kitchen.vercel.app](https://master-kitchen.vercel.app)** — sign in with your
-email, password `MasterKitchen2026!`
+email and the password you were given
 
 ---
 

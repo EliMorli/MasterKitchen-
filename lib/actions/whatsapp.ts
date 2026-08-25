@@ -38,6 +38,9 @@ export async function waStatus(): Promise<{
   connected: boolean;
   webhookReady: boolean;
 }> {
+  // Config presence is mildly sensitive; only staff get a real answer.
+  const supabase = await createClient();
+  if (!(await requireStaff(supabase))) return { connected: false, webhookReady: false };
   return {
     connected: Boolean(creds()),
     webhookReady: Boolean(process.env.WHATSAPP_VERIFY_TOKEN),

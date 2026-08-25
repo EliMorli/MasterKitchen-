@@ -145,12 +145,25 @@ export async function POST(request: NextRequest) {
 
   let pdf = "";
   try {
-    const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(20_000) });
+    // redirect: "manual" — the docrenderer serves PDFs directly; following a
+    // redirect would let a crafted link hop off the validated host (SSRF).
+    const res = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(20_000) });
+    if (res.status >= 300 && res.status < 400) {
+      return NextResponse.json(
+        { error: "That link redirects somewhere else — paste the direct Joist PDF link." },
+        { status: 422 },
+      );
+    }
     if (!res.ok) {
       return NextResponse.json(
         { error: `Joist returned ${res.status} for that link — is it still valid?` },
         { status: 422 },
       );
+    }
+    // Reject oversized documents before buffering the body.
+    const declared = Number(res.headers.get("content-length") ?? "0");
+    if (declared > MAX_PDF_BYTES) {
+      return NextResponse.json({ error: "That PDF is over 4MB." }, { status: 413 });
     }
     const bytes = await res.arrayBuffer();
     if (bytes.byteLength > MAX_PDF_BYTES) {
