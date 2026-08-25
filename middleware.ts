@@ -18,6 +18,17 @@ const PUBLIC_PREFIXES = [
 ];
 
 export async function middleware(request: NextRequest) {
+  const path = request.nextUrl.pathname;
+  const isPublic = PUBLIC_PREFIXES.some((p) => path.startsWith(p));
+
+  // Public traffic skips the auth round trip entirely — this includes every
+  // /supa request, i.e. all of the browser's database traffic, which used to
+  // pay a discarded getUser() call per query. /login is the one public page
+  // that still checks, so a signed-in user bounces to the dashboard.
+  if (isPublic && !path.startsWith("/login")) {
+    return NextResponse.next({ request });
+  }
+
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
@@ -45,9 +56,6 @@ export async function middleware(request: NextRequest) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
-  const path = request.nextUrl.pathname;
-  const isPublic = PUBLIC_PREFIXES.some((p) => path.startsWith(p));
 
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();

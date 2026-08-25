@@ -9,7 +9,6 @@ import { CO_TONE, DOC_TAGS, EVENT_PRESETS, EXPENSE_CATEGORIES, PHASES, TRADES, t
 import { dateTime, money, moneyExact, num, shortDate, timeOfDay } from "@/lib/format";
 import { nextStep } from "@/lib/next-step";
 import { logActivity } from "@/lib/activity";
-import { buildInvoicePdf } from "@/lib/invoice-pdf";
 import { syncInvoiceStored } from "@/lib/invoice-sync";
 import { waCreateGroup, waSendToGroup, waStatus } from "@/lib/actions/whatsapp";
 import { ChatThread } from "@/components/comms";

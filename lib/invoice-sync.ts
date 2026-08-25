@@ -88,7 +88,7 @@ async function refreshInvoicePdf(
   currentPayments: Payment[],
   ctx: InvoiceSyncContext,
 ) {
-  const blob = buildInvoicePdf({
+  const blob = await buildInvoicePdf({
     business: {
       name: ctx.org?.business_name ?? "Master Kitchen",
       address: ctx.org?.address,

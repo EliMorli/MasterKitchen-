@@ -1,4 +1,3 @@
-import { jsPDF } from "jspdf";
 import { moneyExact, shortDate } from "@/lib/format";
 
 export type InvoicePdfInput = {
@@ -39,8 +38,12 @@ const BRAND_WASH = [250, 246, 238] as const; // brand-50
  * a highlighted box (green PAID once covered), and the payment instructions in
  * their own panel. Regenerated on every edit so the filed PDF is always the
  * current truth.
+ *
+ * jsPDF is loaded on demand — it's ~100KB gz and only needed at the moment an
+ * invoice is actually saved, so it must never sit in a page's initial bundle.
  */
-export function buildInvoicePdf(input: InvoicePdfInput): Blob {
+export async function buildInvoicePdf(input: InvoicePdfInput): Promise<Blob> {
+  const { jsPDF } = await import("jspdf");
   const doc = new jsPDF({ unit: "pt", format: "letter" });
   const W = doc.internal.pageSize.getWidth();
   const M = 48;
