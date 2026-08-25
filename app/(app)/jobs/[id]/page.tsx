@@ -10,6 +10,7 @@ import { dateTime, money, moneyExact, num, shortDate, timeOfDay } from "@/lib/fo
 import { nextStep } from "@/lib/next-step";
 import { logActivity } from "@/lib/activity";
 import { buildInvoicePdf } from "@/lib/invoice-pdf";
+import { syncInvoiceStored } from "@/lib/invoice-sync";
 import { waCreateGroup, waSendToGroup, waStatus } from "@/lib/actions/whatsapp";
 import { ChatThread } from "@/components/comms";
 import { AddRepModal } from "@/components/add-rep";
@@ -1506,119 +1507,16 @@ function InvoiceModal({
     }
   }
 
-  /**
-   * Regenerate the PDF and file it under Documents (one row per invoice). The
-   * caller passes an explicit snapshot of what to render — the save path passes
-   * the just-saved form values, the payment path passes the STORED invoice, so
-   * an unsaved header edit never leaks into a PDF filed by a payment.
-   */
-  async function refreshPdf(
-    invoiceId: string,
-    snap: {
-      number: string;
-      description: string | null;
-      line_items: LineItem[];
-      amount: number;
-      issued_at: string | null;
-      due_at: string | null;
-    },
-    currentPayments: Payment[],
-  ) {
-    const blob = buildInvoicePdf({
-      business: {
-        name: org?.business_name ?? "Master Kitchen",
-        address: org?.address,
-        phone: org?.phone,
-        email: org?.email,
-        paymentInstructions: org?.payment_instructions,
-      },
-      billTo: { company: companyName, rep: repName },
-      jobAddress: [project.address, project.city].filter(Boolean).join(", "),
-      number: snap.number,
-      description: snap.description,
-      lineItems: snap.line_items,
-      amount: snap.amount,
-      issuedAt: snap.issued_at,
-      dueAt: snap.due_at,
-      payments: currentPayments.map((p) => ({
-        amount: num(p.amount),
-        method: p.method,
-        paid_on: p.paid_on,
-      })),
-    });
-
-    const path = `${project.id}/invoices/${invoiceId}.pdf`;
-    const { error: upErr } = await supabase.storage.from("documents").upload(path, blob, {
-      contentType: "application/pdf",
-      upsert: true,
-    });
-    if (upErr) {
-      alert(`The invoice saved, but the PDF could not be written: ${upErr.message}`);
-      return;
-    }
-
-    // Order + limit(1) rather than maybeSingle: a stray duplicate row must not
-    // throw and spawn yet another insert.
-    const { data: existing } = await supabase
-      .from("document")
-      .select("id")
-      .eq("storage_path", path)
-      .order("created_at")
-      .limit(1);
-    const row = existing?.[0];
-    if (row) {
-      await supabase.from("document").update({ name: `${snap.number}.pdf`, tag: "invoice" }).eq("id", row.id);
-    } else {
-      await supabase.from("document").insert({
-        project_id: project.id,
-        name: `${snap.number}.pdf`,
-        tag: "invoice",
-        storage_path: path,
-      });
-    }
-  }
-
-  /**
-   * The stored invoice.status is only ever a projection of the real payments
-   * against the SAVED amount: paid when covered, sent once money or a send has
-   * happened, draft otherwise. Recompute it from the DB — never from the form —
-   * so removing a payment can't leave a stale "paid", and regenerate the PDF.
-   */
+  // Status + stored-PDF projection lives in lib/invoice-sync.ts (shared with
+  // the Joist bulk importer).
   async function syncStored(inv: Invoice) {
-    const { data: fresh } = await supabase
-      .from("payment")
-      .select("*")
-      .eq("invoice_id", inv.id)
-      .order("paid_on");
-    const list = fresh ?? [];
-    const total = list.reduce((s, p) => s + num(p.amount), 0);
-    const amount = num(inv.amount);
-
-    let status: Invoice["status"] = inv.status;
-    let paid_at: string | null = inv.paid_at;
-    if (total >= amount && amount > 0) {
-      status = "paid";
-      paid_at = list.length ? list[list.length - 1].paid_on : inv.paid_at;
-    } else if (total > 0) {
-      status = "sent";
-      paid_at = null;
-    } else {
-      status = inv.status === "paid" ? "sent" : inv.status; // fully un-paid → back to sent
-      paid_at = null;
-    }
-    await supabase.from("invoice").update({ status, paid_at }).eq("id", inv.id);
-    await refreshPdf(
-      inv.id,
-      {
-        number: inv.number,
-        description: inv.description,
-        line_items: ((inv.line_items as unknown as LineItem[] | null) ?? []),
-        amount,
-        issued_at: inv.issued_at,
-        due_at: inv.due_at,
-      },
-      list,
-    );
+    await syncInvoiceStored(supabase, inv, {
+      project: { id: project.id, address: project.address, city: project.city },
+      org,
+      companyName,
+      repName,
+      onPdfError: (msg) => alert(msg),
+    });
   }
 
   async function save() {

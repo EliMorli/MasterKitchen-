@@ -11,6 +11,7 @@ import { nextStep } from "@/lib/next-step";
 import { logActivity } from "@/lib/activity";
 import { money } from "@/lib/format";
 import { AddRepModal } from "@/components/add-rep";
+import { JoistImportModal } from "@/components/joist-import-modal";
 import type { Database } from "@/lib/database.types";
 
 type Project = Database["public"]["Tables"]["project"]["Row"] & {
@@ -35,6 +36,9 @@ export default function JobsPage() {
   const [reps, setReps] = useState<Rep[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
+  // Bumped when the Joist import lands rows, so the board refetches.
+  const [reloadKey, setReloadKey] = useState(0);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<Phase | null>(null);
   // Board is the default; the owner's choice sticks across visits.
@@ -82,7 +86,7 @@ export default function JobsPage() {
       setLoading(false);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [reloadKey]);
 
   async function moveTo(projectId: string, phase: Phase) {
     const current = projects.find((p) => p.id === projectId);
@@ -138,6 +142,9 @@ export default function JobsPage() {
                 <List size={14} /> List
               </button>
             </div>
+            <button onClick={() => setImporting(true)} className="btn-ghost">
+              <FileUp size={16} /> Import from Joist
+            </button>
             <button onClick={() => setCreating(true)} className="btn-brand">
               <Plus size={16} /> New job
             </button>
@@ -215,6 +222,13 @@ export default function JobsPage() {
         </div>
       </div>
       )}
+
+      {importing ? (
+        <JoistImportModal
+          onClose={() => setImporting(false)}
+          onDone={() => setReloadKey((k) => k + 1)}
+        />
+      ) : null}
 
       {creating ? (
         <NewJobModal
