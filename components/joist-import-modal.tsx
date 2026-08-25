@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Loader2, MinusCircle } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Modal } from "@/components/ui";
-import { money, num } from "@/lib/format";
+import { moneyExact, num } from "@/lib/format";
 import { logActivity } from "@/lib/activity";
 import { syncInvoiceStored } from "@/lib/invoice-sync";
 import type { Database } from "@/lib/database.types";
@@ -220,7 +220,7 @@ export function JoistImportModal({ onClose, onDone }: { onClose: () => void; onD
           .single();
         if (invErr || !inv) throw new Error(invErr?.message ?? "Could not create the invoice.");
         logActivity(supabase, project.id, "invoice",
-          `Invoice ${number} imported from Joist — ${money(amount)}`);
+          `Invoice ${number} imported from Joist — ${moneyExact(amount)}`);
 
         // Payments the old invoice already showed come along with it.
         const pays = (x.payments ?? []).filter((p) => num(p.amount) > 0);
@@ -272,8 +272,8 @@ export function JoistImportModal({ onClose, onDone }: { onClose: () => void; onD
           status: "done",
           detail:
             `Invoice ${number} → ${company.name}${createdCompany ? " (new client)" : ""}, ` +
-            `${createdJob ? `new job ${project.code}` : `job ${project.code}`} — ${money(amount)}` +
-            (paidTotal ? `, ${money(paidTotal)} paid` : "") +
+            `${createdJob ? `new job ${project.code}` : `job ${project.code}`} — ${moneyExact(amount)}` +
+            (paidTotal ? `, ${moneyExact(paidTotal)} paid` : "") +
             pdfWarn,
         });
       } catch (e) {
