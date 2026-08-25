@@ -1,4 +1,4 @@
-import { num } from "@/lib/format";
+import { num, todayISO } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
 type Phase = Database["public"]["Enums"]["phase"];
@@ -45,7 +45,7 @@ export function nextStep(
   if (p.archived) return { label: "Archived", kind: "done" };
 
   // Money outranks everything: an overdue invoice is a chase no matter the phase.
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
   const overdue = invoices.filter((i) => i.status === "sent" && i.due_at && i.due_at < today);
   if (overdue.length) {
     const worst = Math.max(...overdue.map((i) => daysSince(i.due_at)));

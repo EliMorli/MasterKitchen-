@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
-import { createClient } from "@/lib/supabase/server";
+import { extractFromPdf, requireAnthropic, requireUser } from "@/lib/api/extract";
 
 export const maxDuration = 60;
 
@@ -113,20 +112,8 @@ function allowedUrl(raw: string): URL | null {
 const MAX_PDF_BYTES = 4 * 1024 * 1024;
 
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
-
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
-    return NextResponse.json(
-      { error: "PDF reading isn't connected yet — add ANTHROPIC_API_KEY in Vercel and redeploy." },
-      { status: 503 },
-    );
-  }
+  const denied = (await requireUser()) ?? requireAnthropic();
+  if (denied) return denied;
 
   let rawUrl = "";
   try {
@@ -182,42 +169,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const client = new Anthropic();
-  try {
-    const response = await client.messages.create({
-      model: process.env.AGENT_MODEL || "claude-opus-5",
-      max_tokens: 3000,
-      output_config: { effort: "medium", format: EXTRACT_SCHEMA },
-      system: SYSTEM,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "document",
-              source: { type: "base64", media_type: "application/pdf", data: pdf },
-            },
-            { type: "text", text: "Extract the invoice fields from this document." },
-          ],
-        },
-      ],
-    });
-
-    if (response.stop_reason === "refusal") {
-      return NextResponse.json({ error: "I couldn't read that document." }, { status: 422 });
-    }
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("");
-    return NextResponse.json({ extracted: JSON.parse(text), pdf });
-  } catch (error) {
-    if (error instanceof Anthropic.APIError) {
-      return NextResponse.json(
-        { error: `Couldn't read the PDF (API error ${error.status ?? "?"}).` },
-        { status: 502 },
-      );
-    }
-    return NextResponse.json({ error: "Couldn't read the PDF. Try again." }, { status: 500 });
-  }
+  const result = await extractFromPdf({
+    pdfBase64: pdf,
+    system: SYSTEM,
+    schema: EXTRACT_SCHEMA,
+    maxTokens: 3000,
+  });
+  if ("response" in result) return result.response;
+  // The PDF rides back too so the importer can file the original without
+  // re-fetching it.
+  return NextResponse.json({ extracted: result.extracted, pdf });
 }

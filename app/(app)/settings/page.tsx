@@ -23,15 +23,16 @@ export default function SettingsPage() {
 
   useEffect(() => {
     supabase.from("org_setting").select("*").maybeSingle().then(({ data }) => setOrg(data));
+    // One query for the whole team answers both questions: the signed-in
+    // user's demo flag is just their row in the same list.
     supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (!user) return;
-      const { data: me } = await supabase.from("user_account").select("is_demo").eq("id", user.id).maybeSingle();
-      const isDemo = me?.is_demo === true;
+      const { data: all } = await supabase.from("user_account").select("*").order("created_at");
+      const isDemo = all?.find((u) => u.id === user.id)?.is_demo === true;
       setDemo(isDemo);
       // The team list and integration settings are hidden from a demo account.
       if (!isDemo) {
-        const { data } = await supabase.from("user_account").select("*").order("created_at");
-        setUsers(data ?? []);
+        setUsers(all ?? []);
         waStatus().then(setWa).catch(() => {});
       }
     });

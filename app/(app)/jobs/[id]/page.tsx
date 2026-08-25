@@ -1,15 +1,16 @@
 "use client";
 
-import { use, useCallback, useEffect, useMemo, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { CheckCircle2, Circle, Copy, ExternalLink, FileUp, Paperclip, Plus, Sparkles, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Badge, Empty, Field, Modal } from "@/components/ui";
 import { CO_TONE, DOC_TAGS, EVENT_PRESETS, EXPENSE_CATEGORIES, PHASES, TRADES, type Phase } from "@/lib/labels";
-import { dateTime, money, moneyExact, num, shortDate, timeOfDay } from "@/lib/format";
+import { dateTime, money, moneyExact, num, shortDate, timeOfDay, todayISO } from "@/lib/format";
 import { nextStep } from "@/lib/next-step";
 import { logActivity } from "@/lib/activity";
 import { syncInvoiceStored } from "@/lib/invoice-sync";
+import { liveInvoiceStatus, paidByInvoice } from "@/lib/derive";
 import { waCreateGroup, waSendToGroup, waStatus } from "@/lib/actions/whatsapp";
 import { ChatThread } from "@/components/comms";
 import { AddRepModal } from "@/components/add-rep";
@@ -59,17 +60,20 @@ async function refreshPortalDocs(
 
   const THIRTY_DAYS = 60 * 60 * 24 * 30;
   const expires = new Date(Date.now() + THIRTY_DAYS * 1000).toISOString();
+  // One batch call signs every file at once instead of a round trip per file.
+  const { data: signed } = await supabase.storage
+    .from("documents")
+    .createSignedUrls(designs.map((d) => d.storage_path!), THIRTY_DAYS);
+  if (!signed) return;
+  const urlByPath = new Map(signed.filter((s) => s.signedUrl).map((s) => [s.path, s.signedUrl]));
   await Promise.all(
-    designs.map(async (d) => {
-      const { data } = await supabase.storage
-        .from("documents")
-        .createSignedUrl(d.storage_path!, THIRTY_DAYS);
-      if (data?.signedUrl) {
-        await supabase
-          .from("document")
-          .update({ portal_url: data.signedUrl, portal_url_expires: expires })
-          .eq("id", d.id);
-      }
+    designs.map((d) => {
+      const url = urlByPath.get(d.storage_path!);
+      if (!url) return null;
+      return supabase
+        .from("document")
+        .update({ portal_url: url, portal_url_expires: expires })
+        .eq("id", d.id);
     }),
   );
 }
@@ -104,8 +108,29 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [saving, setSaving] = useState(false);
   const [flash, setFlash] = useState("");
 
+  // Reference data (directories, org settings, WA status) can't change as a
+  // result of anything done on this page — fetched once on mount, not in
+  // every reload.
+  useEffect(() => {
+    Promise.all([
+      supabase.from("client_company").select("id, name").order("name"),
+      supabase.from("contact").select("id, name, client_company_id, phone").order("name"),
+      supabase.from("partner").select("id, name, kind").order("name"),
+      supabase.from("org_setting").select("*").maybeSingle(),
+    ]).then(([comp, rep, part, orgRow]) => {
+      setCompanies(comp.data ?? []);
+      setReps(rep.data ?? []);
+      setPartners(part.data ?? []);
+      setOrg(orgRow.data ?? null);
+    });
+    waStatus().then((s) => setWaOn(s.connected)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const lastLoad = useRef(0);
   const reload = useCallback(async () => {
-    const [p, ev, inv, ex, co, dc, pr, comp, rep, part, pay, act, orgRow, msgMeta] = await Promise.all([
+    lastLoad.current = Date.now();
+    const [p, ev, inv, ex, co, dc, pr, pay, act, msgMeta] = await Promise.all([
       supabase.from("project").select("*").eq("id", id).maybeSingle(),
       supabase.from("event").select("*, partner(name)").eq("project_id", id).order("date"),
       supabase.from("invoice").select("*").eq("project_id", id).order("created_at"),
@@ -113,12 +138,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       supabase.from("change_order").select("*").eq("project_id", id).order("created_at"),
       supabase.from("document").select("*").eq("project_id", id).order("created_at", { ascending: false }),
       supabase.from("price_request").select("*, partner(name)").eq("project_id", id).order("created_at"),
-      supabase.from("client_company").select("id, name").order("name"),
-      supabase.from("contact").select("id, name, client_company_id, phone").order("name"),
-      supabase.from("partner").select("id, name, kind").order("name"),
       supabase.from("payment").select("*").eq("project_id", id).order("paid_on"),
       supabase.from("activity").select("*").eq("project_id", id).order("created_at", { ascending: false }).limit(200),
-      supabase.from("org_setting").select("*").maybeSingle(),
       supabase.from("wa_message").select("id").eq("project_id", id).eq("direction", "in").is("read_at", null),
     ]);
     setProject((p.data as Project) ?? null);
@@ -128,19 +149,11 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     setCos(co.data ?? []);
     setDocs(dc.data ?? []);
     setPrices((pr.data as PriceReq[]) ?? []);
-    setCompanies(comp.data ?? []);
-    setReps(rep.data ?? []);
-    setPartners(part.data ?? []);
     setPayments(pay.data ?? []);
     setActs(act.data ?? []);
-    setOrg(orgRow.data ?? null);
     setUnreadMsgs(msgMeta.data?.length ?? 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
-
-  useEffect(() => {
-    waStatus().then((s) => setWaOn(s.connected)).catch(() => {});
-  }, []);
 
   useEffect(() => {
     reload();
@@ -194,14 +207,27 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     setTimeout(() => setFlash(""), 1800);
   }
 
-  const rep = reps.find((r) => r.id === project?.contact_id) ?? null;
-  const companyReps = reps.filter((r) => r.client_company_id === project?.client_company_id);
-  const crews = partners.filter((p) => p.kind === "crew" || p.kind === "other");
-
-  const approvedCOs = cos.filter((c) => c.status === "approved").reduce((s, c) => s + num(c.amount), 0);
+  // Memoized on the slices they read, so typing in the Overview form (which
+  // patches `project` per keystroke) doesn't re-derive what didn't change.
+  const rep = useMemo(
+    () => reps.find((r) => r.id === project?.contact_id) ?? null,
+    [reps, project?.contact_id],
+  );
+  const companyReps = useMemo(
+    () => reps.filter((r) => r.client_company_id === project?.client_company_id),
+    [reps, project?.client_company_id],
+  );
+  const crews = useMemo(
+    () => partners.filter((p) => p.kind === "crew" || p.kind === "other"),
+    [partners],
+  );
+  const approvedCOs = useMemo(
+    () => cos.filter((c) => c.status === "approved").reduce((s, c) => s + num(c.amount), 0),
+    [cos],
+  );
   // The job's cost IS its expenses — several payouts over the job's life, not
   // one hand-typed number. project.cost is retired from every formula.
-  const expenseTotal = expenses.reduce((s, e) => s + num(e.amount), 0);
+  const expenseTotal = useMemo(() => expenses.reduce((s, e) => s + num(e.amount), 0), [expenses]);
   const profit = num(project?.price) + approvedCOs - expenseTotal;
   const step = project ? nextStep(project, events, invoices, prices, cos) : null;
 
@@ -249,10 +275,12 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               onClick={() => {
                 setTab(t);
                 // Refetch on tab change so crew updates and vendor answers that
-                // arrived while the page was open show up — but never while
-                // there are unsaved edits, or the switch would silently discard
-                // them (reload() overwrites the in-memory project).
-                if (!dirty) reload();
+                // arrived while the page was open show up — but only when the
+                // data is actually stale (>30s old; clicking through tabs must
+                // not refire ten queries per click), and never while there are
+                // unsaved edits, or the switch would silently discard them
+                // (reload() overwrites the in-memory project).
+                if (!dirty && Date.now() - lastLoad.current > 30_000) reload();
               }}
               className={`-mb-px border-b-2 px-3.5 py-2.5 text-sm font-medium transition-colors ${
                 tab === t
@@ -299,7 +327,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                 amount: num(pr.amount),
                 category: "Job cost",
                 partner_id: pr.partner_id,
-                spent_at: new Date().toISOString().slice(0, 10),
+                spent_at: todayISO(),
               });
               logActivity(supabase, project.id, "price",
                 `${pr.partner?.name ?? "Vendor"}'s price added to expenses: ${money(pr.amount)}`);
@@ -919,7 +947,7 @@ function EventModal({
   const supabase = createClient();
   const [label, setLabel] = useState(EVENT_PRESETS[0]);
   const [custom, setCustom] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayISO());
   const [time, setTime] = useState("");
   const [partnerId, setPartnerId] = useState("");
 
@@ -1119,15 +1147,10 @@ function AskPricesModal({
  * Money — invoices and expenses, everything editable, profit in plain sight.
  * ------------------------------------------------------------------------- */
 /** Live status: derived from payments and the due date, never from a dropdown. */
+// Single source of truth for the badge: lib/derive. Payments here are already
+// job-scoped, so building the per-invoice map on the fly is cheap.
 function invoiceStatus(i: Invoice, payments: Payment[]) {
-  const paid = payments.filter((p) => p.invoice_id === i.id).reduce((s, p) => s + num(p.amount), 0);
-  const balance = num(i.amount) - paid;
-  if (i.status === "draft" && paid === 0) return { label: "draft", tone: "bg-ink-100 text-ink-700", paid, balance };
-  if (balance <= 0 && num(i.amount) > 0) return { label: "paid", tone: "bg-emerald-100 text-emerald-800", paid, balance: 0 };
-  if (paid > 0) return { label: "partial", tone: "bg-violet-100 text-violet-700", paid, balance };
-  if (i.due_at && i.due_at < new Date().toISOString().slice(0, 10))
-    return { label: "overdue", tone: "bg-red-100 text-red-800", paid, balance };
-  return { label: "sent", tone: "bg-brand-100 text-brand-700", paid, balance };
+  return liveInvoiceStatus(i, paidByInvoice(payments));
 }
 
 function MoneyTab({
@@ -1301,7 +1324,7 @@ function MoneyTab({
                           .from("expense")
                           .update({
                             paid: !e.paid,
-                            paid_on: e.paid ? null : new Date().toISOString().slice(0, 10),
+                            paid_on: e.paid ? null : todayISO(),
                           })
                           .eq("id", e.id);
                         logActivity(supabase, project.id, "expense",
@@ -1406,7 +1429,7 @@ function InvoiceModal({
   const [form, setForm] = useState({
     number: invoice?.number ?? nextNumber,
     status: invoice?.status ?? ("draft" as Invoice["status"]),
-    issued_at: invoice?.issued_at ?? new Date().toISOString().slice(0, 10),
+    issued_at: invoice?.issued_at ?? todayISO(),
     due_at: invoice?.due_at ?? "",
   });
   // The invoice body is its rows. Older invoices without stored rows open as
@@ -1418,7 +1441,7 @@ function InvoiceModal({
   });
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<Payment["method"]>("check");
-  const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10));
+  const [payDate, setPayDate] = useState(todayISO());
   const [payProof, setPayProof] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1494,7 +1517,7 @@ function InvoiceModal({
       const paidAmt = Math.min(num(x.amount_paid ?? 0), rowTotal || num(x.total ?? 0));
       setPendingPayment(
         paidAmt > 0
-          ? { amount: paidAmt, date: x.paid_date ?? x.issued_at ?? new Date().toISOString().slice(0, 10) }
+          ? { amount: paidAmt, date: x.paid_date ?? x.issued_at ?? todayISO() }
           : null,
       );
       setImportFile(file);
@@ -1953,7 +1976,7 @@ function ExpenseModal({
   const [label, setLabel] = useState(expense?.label ?? "");
   const [amount, setAmount] = useState(expense?.amount ?? 0);
   const [spentAt, setSpentAt] = useState(
-    expense?.spent_at ?? new Date().toISOString().slice(0, 10),
+    expense?.spent_at ?? todayISO(),
   );
   const [category, setCategory] = useState(expense?.category ?? "Job cost");
   const [paid, setPaid] = useState(expense?.paid ?? false);
@@ -1985,7 +2008,7 @@ function ExpenseModal({
       client_company_id: payee === "client" ? clientCompanyId : null,
       payee_name: payee === "other" && payeeName.trim() ? payeeName.trim() : null,
       paid,
-      paid_on: paid ? (expense?.paid_on ?? new Date().toISOString().slice(0, 10)) : null,
+      paid_on: paid ? (expense?.paid_on ?? todayISO()) : null,
     };
     if (expense) await supabase.from("expense").update(row).eq("id", expense.id);
     else await supabase.from("expense").insert(row);

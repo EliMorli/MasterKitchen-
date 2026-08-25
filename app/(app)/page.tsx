@@ -7,6 +7,7 @@ import { Badge, Empty, StatCard, Topbar } from "@/components/ui";
 import { PHASES, PHASE_TONE } from "@/lib/labels";
 import { nextStep, type NextStep } from "@/lib/next-step";
 import { money, num, relativeDay, timeOfDay, toISODate } from "@/lib/format";
+import { paidByInvoice } from "@/lib/derive";
 import type { Database } from "@/lib/database.types";
 
 type Project = Database["public"]["Tables"]["project"]["Row"] & {
@@ -67,45 +68,65 @@ export default function Dashboard() {
   const today = toISODate(new Date());
   const weekOut = toISODate(new Date(Date.now() + 7 * 86_400_000));
 
-  // One derived line per live job: the whole business, sorted by whose move it is.
+  // One derived line per live job: the whole business, sorted by whose move it
+  // is. Children are bucketed by project in one pass first — no per-job rescans
+  // of the full org-wide arrays.
   const lines = useMemo(() => {
+    const bucket = <T extends { project_id: string | null }>(rows: T[]) => {
+      const m = new Map<string, T[]>();
+      for (const r of rows) {
+        if (!r.project_id) continue;
+        const arr = m.get(r.project_id) ?? [];
+        arr.push(r);
+        m.set(r.project_id, arr);
+      }
+      return m;
+    };
+    const ev = bucket(events);
+    const inv = bucket(invoices);
+    const req = bucket(priceReqs);
+    const co = bucket(cos);
     return projects
       .filter((p) => p.phase !== "paid")
       .map((p) => ({
         p,
-        step: nextStep(
-          p,
-          events.filter((e) => e.project_id === p.id),
-          invoices.filter((i) => i.project_id === p.id),
-          priceReqs.filter((r) => r.project_id === p.id),
-          cos.filter((c) => c.project_id === p.id),
-        ),
+        step: nextStep(p, ev.get(p.id) ?? [], inv.get(p.id) ?? [], req.get(p.id) ?? [], co.get(p.id) ?? []),
       }));
   }, [projects, events, invoices, priceReqs, cos]);
 
-  const ourMove = lines.filter((l) => l.step.kind === "ours");
-  const waiting = lines
-    .filter((l) => l.step.kind === "waiting")
-    .sort((a, b) => (b.step.days ?? 0) - (a.step.days ?? 0));
+  const paidMap = useMemo(() => paidByInvoice(payments), [payments]);
 
-  const todayEvents = events.filter((e) => e.date === today && !e.done);
-  const upcoming = events.filter((e) => e.date > today && e.date <= weekOut && !e.done);
-  const overdueCount = lines.filter((l) => l.step.urgent && l.step.label.includes("payment")).length;
+  const derived = useMemo(() => {
+    const ourMove = lines.filter((l) => l.step.kind === "ours");
+    const waiting = lines
+      .filter((l) => l.step.kind === "waiting")
+      .sort((a, b) => (b.step.days ?? 0) - (a.step.days ?? 0));
 
-  // Money, payment-derived (same source as Money and Pulse). Outstanding is the
-  // real balance per invoice; collected this week is a rolling 7-day sum.
-  const weekAgo = toISODate(new Date(Date.now() - 7 * 86_400_000));
-  const paidByInvoice = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const p of payments) m.set(p.invoice_id, (m.get(p.invoice_id) ?? 0) + num(p.amount));
-    return m;
-  }, [payments]);
-  const outstanding = invoices
-    .filter((i) => i.status !== "draft")
-    .reduce((s, i) => s + Math.max(0, num(i.amount) - (paidByInvoice.get(i.id) ?? 0)), 0);
-  const collectedWeek = payments
-    .filter((p) => p.paid_on >= weekAgo)
-    .reduce((s, p) => s + num(p.amount), 0);
+    const todayEvents = events.filter((e) => e.date === today && !e.done);
+    const upcoming = events.filter((e) => e.date > today && e.date <= weekOut && !e.done);
+    // Overdue = the invoices themselves, not a string-match on step labels.
+    const overdueCount = invoices.filter(
+      (i) =>
+        i.status !== "draft" &&
+        num(i.amount) - (paidMap.get(i.id) ?? 0) > 0 &&
+        i.due_at &&
+        i.due_at < today,
+    ).length;
+
+    // Money, payment-derived (same source as Money and Pulse). Outstanding is
+    // the real balance per invoice; collected this week is a rolling 7-day sum.
+    const weekAgo = toISODate(new Date(Date.now() - 7 * 86_400_000));
+    const outstanding = invoices
+      .filter((i) => i.status !== "draft")
+      .reduce((s, i) => s + Math.max(0, num(i.amount) - (paidMap.get(i.id) ?? 0)), 0);
+    const collectedWeek = payments
+      .filter((p) => p.paid_on >= weekAgo)
+      .reduce((s, p) => s + num(p.amount), 0);
+
+    return { ourMove, waiting, todayEvents, upcoming, overdueCount, outstanding, collectedWeek };
+  }, [lines, events, invoices, payments, paidMap, today, weekOut]);
+  const { ourMove, waiting, todayEvents, upcoming, overdueCount, outstanding, collectedWeek } =
+    derived;
 
   return (
     <>
@@ -211,7 +232,7 @@ export default function Dashboard() {
         <header className="border-b border-ink-200 px-5 py-2.5">
           <p className="text-xs font-bold uppercase tracking-wide text-ink-500">Next 7 days</p>
         </header>
-        {upcoming.length === 0 ? <Empty title="Nothing coming up" /> : <EventList events={upcoming} showDay />}
+        {upcoming.length === 0 ? <Empty title="Nothing coming up" /> : <EventList events={upcoming} />}
       </section>
 
       <section className="card mt-5">
@@ -262,7 +283,7 @@ function QueueRow({ p, step }: { p: Project; step: NextStep }) {
   );
 }
 
-function EventList({ events, showDay }: { events: Event[]; showDay?: boolean }) {
+function EventList({ events }: { events: Event[] }) {
   return (
     <ul className="divide-y divide-ink-100">
       {events.slice(0, 10).map((e) => (
@@ -280,8 +301,7 @@ function EventList({ events, showDay }: { events: Event[]; showDay?: boolean }) 
             </p>
           </div>
           <span className="nums shrink-0 text-xs text-ink-500">
-            {showDay ? `${relativeDay(e.date)} ` : ""}
-            {e.time ? timeOfDay(e.time) : ""}
+            {relativeDay(e.date)} {e.time ? timeOfDay(e.time) : ""}
           </span>
         </li>
       ))}

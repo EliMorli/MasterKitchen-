@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { Empty, StatCard, Table, Topbar } from "@/components/ui";
 import { money, num, toISODate } from "@/lib/format";
+import { approvedCoByProject, paidByInvoice } from "@/lib/derive";
 import type { Database } from "@/lib/database.types";
 
 type Project = Database["public"]["Tables"]["project"]["Row"] & {
@@ -64,20 +65,17 @@ export default function PulsePage() {
   const stats = useMemo(() => {
     const live = projects.filter((p) => !p.archived);
 
-    // Money now
-    const paidByInvoice = new Map<string, number>();
-    for (const p of payments) {
-      paidByInvoice.set(p.invoice_id, (paidByInvoice.get(p.invoice_id) ?? 0) + num(p.amount));
-    }
+    // Money now. All the per-entity sums are single-pass Maps — no per-row
+    // rescans of the full arrays, so this stays flat as history grows.
+    const paidMap = paidByInvoice(payments);
     const open = invoices.filter(
-      (i) => i.status !== "draft" && num(i.amount) > (paidByInvoice.get(i.id) ?? 0),
+      (i) => i.status !== "draft" && num(i.amount) > (paidMap.get(i.id) ?? 0),
     );
-    const outstanding = open.reduce(
-      (s, i) => s + num(i.amount) - (paidByInvoice.get(i.id) ?? 0), 0);
+    const outstanding = open.reduce((s, i) => s + num(i.amount) - (paidMap.get(i.id) ?? 0), 0);
     const today = toISODate(now);
     const overdue = open
       .filter((i) => i.due_at && i.due_at < today)
-      .reduce((s, i) => s + num(i.amount) - (paidByInvoice.get(i.id) ?? 0), 0);
+      .reduce((s, i) => s + num(i.amount) - (paidMap.get(i.id) ?? 0), 0);
 
     const collectedIn = (mk: string) =>
       payments.filter((p) => p.paid_on.startsWith(mk)).reduce((s, p) => s + num(p.amount), 0);
@@ -87,31 +85,36 @@ export default function PulsePage() {
         .reduce((s, i) => s + num(i.amount), 0);
 
     // Money coming: booked jobs not yet fully collected.
-    const extras = (pid: string) =>
-      cos.filter((c) => c.project_id === pid && c.status === "approved").reduce((s, c) => s + num(c.amount), 0);
+    const extrasBy = approvedCoByProject(cos);
+    const collectedByProject = new Map<string, number>();
+    for (const x of payments) {
+      collectedByProject.set(x.project_id, (collectedByProject.get(x.project_id) ?? 0) + num(x.amount));
+    }
     const backlog = live
       .filter((p) => ["approved", "in_progress", "complete"].includes(p.phase))
       .reduce((s, p) => {
-        const contract = num(p.price) + extras(p.id);
-        const collected = payments
-          .filter((x) => x.project_id === p.id)
-          .reduce((a, x) => a + num(x.amount), 0);
-        return s + Math.max(0, contract - collected);
+        const contract = num(p.price) + (extrasBy.get(p.id) ?? 0);
+        return s + Math.max(0, contract - (collectedByProject.get(p.id) ?? 0));
       }, 0);
 
-    // Flow: first time a job hit "approved" = won (from the phase log).
+    // Flow: first time a job hit "approved" = won; first "complete" ends the
+    // clock. One chronological pass records both firsts per project.
     // Copy before sorting — never mutate the React state array in place.
     const actsByTime = [...acts].sort((x, y) => x.created_at.localeCompare(y.created_at));
-    const wonIn = (mk: string) => {
-      const seen = new Set<string>();
-      let count = 0;
-      for (const a of actsByTime) {
-        const to = (a.detail as { to?: string } | null)?.to;
-        if (to === "approved" && !seen.has(a.project_id)) {
-          seen.add(a.project_id);
-          if (a.created_at.startsWith(mk)) count++;
-        }
+    const firstApprovedMonth = new Map<string, string>();
+    const firstCompleteAt = new Map<string, string>();
+    for (const a of actsByTime) {
+      const to = (a.detail as { to?: string } | null)?.to;
+      if (to === "approved" && !firstApprovedMonth.has(a.project_id)) {
+        firstApprovedMonth.set(a.project_id, a.created_at.slice(0, 7));
       }
+      if (to === "complete" && !firstCompleteAt.has(a.project_id)) {
+        firstCompleteAt.set(a.project_id, a.created_at);
+      }
+    }
+    const wonIn = (mk: string) => {
+      let count = 0;
+      for (const m of firstApprovedMonth.values()) if (m === mk) count++;
       return count;
     };
 
@@ -122,13 +125,9 @@ export default function PulsePage() {
     // Speed: created → first complete (phase log), for finished jobs.
     const durations: number[] = [];
     for (const p of projects.filter((x) => ["complete", "paid"].includes(x.phase))) {
-      const done = acts.find(
-        (a) => a.project_id === p.id && (a.detail as { to?: string } | null)?.to === "complete",
-      );
+      const done = firstCompleteAt.get(p.id);
       if (done) {
-        durations.push(
-          (new Date(done.created_at).getTime() - new Date(p.created_at).getTime()) / DAY,
-        );
+        durations.push((new Date(done).getTime() - new Date(p.created_at).getTime()) / DAY);
       }
     }
     const avgDays = durations.length
@@ -142,7 +141,6 @@ export default function PulsePage() {
       backlog, quoting,
       wonNow: wonIn(thisMonth), wonPrev: wonIn(lastMonth),
       avgDays,
-      paidByInvoice,
     };
   }, [projects, invoices, payments, cos, acts, thisMonth, lastMonth, now]);
 
@@ -164,9 +162,11 @@ export default function PulsePage() {
       if (age <= 30) row.now++;
       else if (age <= 60) row.prev++;
     }
+    const invoiceById = new Map(invoices.map((i) => [i.id, i]));
+    const projectById = new Map(projects.map((p) => [p.id, p]));
     for (const pay of payments) {
-      const inv = invoices.find((i) => i.id === pay.invoice_id);
-      const proj = projects.find((p) => p.id === pay.project_id);
+      const inv = invoiceById.get(pay.invoice_id);
+      const proj = projectById.get(pay.project_id);
       const cid = proj?.client_company?.id;
       if (!inv?.issued_at || !cid || !map.has(cid)) continue;
       map.get(cid)!.payDays.push(
@@ -191,8 +191,7 @@ export default function PulsePage() {
     return [...map.values()].sort((a, b) => b.done - a.done || b.jobs - a.jobs);
   }, [projects]);
 
-  const vs = (nowV: number, prevV: number, fmt: (n: number) => string) =>
-    `${fmt(prevV)} last month`;
+  const vs = (prevV: number, fmt: (n: number) => string) => `${fmt(prevV)} last month`;
 
   return (
     <>
@@ -210,12 +209,12 @@ export default function PulsePage() {
           label="Collected this month"
           value={money(stats.collectedNow)}
           tone="text-emerald-700"
-          hint={vs(stats.collectedNow, stats.collectedPrev, money)}
+          hint={vs(stats.collectedPrev, money)}
         />
         <StatCard
           label="Invoiced this month"
           value={money(stats.invoicedNow)}
-          hint={vs(stats.invoicedNow, stats.invoicedPrev, money)}
+          hint={vs(stats.invoicedPrev, money)}
         />
       </div>
 

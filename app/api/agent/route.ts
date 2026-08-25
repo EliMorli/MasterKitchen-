@@ -153,9 +153,12 @@ async function runAgent(
       // Medium effort: command parsing doesn't need deep deliberation, and
       // the staff member is standing there waiting for the confirmation text.
       output_config: { effort: "medium" },
+      // Both blocks are cached: SYSTEM never changes, and the jobs-list
+      // context is stable across the turns of a conversation, so follow-up
+      // messages reuse the prefix instead of re-paying for it.
       system: [
-        { type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } },
-        { type: "text", text: context },
+        { type: "text", text: SYSTEM },
+        { type: "text", text: context, cache_control: { type: "ephemeral" } },
       ],
       tools: buildAgentTools(supabase),
       messages: [...history, { role: "user", content: text }],

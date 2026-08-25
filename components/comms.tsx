@@ -21,11 +21,16 @@ export function ChatThread({
   toPhone,
   toName,
   onChanged,
+  onMessageChanged,
 }: {
   projectId: string;
   toPhone: string | null;
   toName: string | null;
+  /** Coarse "the thread changed" — a send, or unread messages marked read. */
   onChanged?: () => void;
+  /** Fine-grained single-message patch (starring) so the parent can update
+   * its own copy without refetching everything. */
+  onMessageChanged?: (id: string, patch: Partial<Msg>) => void;
 }) {
   const supabase = createClient();
   const [msgs, setMsgs] = useState<Msg[]>([]);
@@ -35,7 +40,7 @@ export function ChatThread({
   const [sending, setSending] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
 
-  async function load() {
+  async function load(): Promise<Msg[]> {
     // Newest-first + reverse: the cap must trim OLD messages, not new ones.
     const { data } = await supabase
       .from("wa_message")
@@ -43,20 +48,25 @@ export function ChatThread({
       .eq("project_id", projectId)
       .order("created_at", { ascending: false })
       .limit(500);
-    setMsgs(((data as Msg[]) ?? []).reverse());
+    const rows = ((data as Msg[]) ?? []).reverse();
+    setMsgs(rows);
     setLoading(false);
+    return rows;
   }
 
   useEffect(() => {
-    load();
-    // Seeing the thread is reading it.
-    supabase
-      .from("wa_message")
-      .update({ read_at: new Date().toISOString() })
-      .eq("project_id", projectId)
-      .eq("direction", "in")
-      .is("read_at", null)
-      .then(() => onChanged?.());
+    // Seeing the thread is reading it — but only spend the write (and the
+    // parent's refresh) when there actually is something unread.
+    load().then((rows) => {
+      if (!rows.some((m) => m.direction === "in" && !m.read_at)) return;
+      supabase
+        .from("wa_message")
+        .update({ read_at: new Date().toISOString() })
+        .eq("project_id", projectId)
+        .eq("direction", "in")
+        .is("read_at", null)
+        .then(() => onChanged?.());
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
@@ -85,9 +95,10 @@ export function ChatThread({
   }
 
   async function toggleImportant(m: Msg) {
+    // Optimistic on both sides of the tree — no refetch for one star.
     setMsgs((prev) => prev.map((x) => (x.id === m.id ? { ...x, important: !m.important } : x)));
+    onMessageChanged?.(m.id, { important: !m.important });
     await supabase.from("wa_message").update({ important: !m.important }).eq("id", m.id);
-    onChanged?.();
   }
 
   return (

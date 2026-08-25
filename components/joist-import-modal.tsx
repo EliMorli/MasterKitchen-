@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Loader2, MinusCircle } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Modal } from "@/components/ui";
-import { moneyExact, num } from "@/lib/format";
+import { moneyExact, num, todayISO } from "@/lib/format";
 import { logActivity } from "@/lib/activity";
 import { syncInvoiceStored } from "@/lib/invoice-sync";
 import type { Database } from "@/lib/database.types";
@@ -222,17 +222,20 @@ export function JoistImportModal({ onClose, onDone }: { onClose: () => void; onD
         logActivity(supabase, project.id, "invoice",
           `Invoice ${number} imported from Joist — ${moneyExact(amount)}`);
 
-        // Payments the old invoice already showed come along with it.
+        // Payments the old invoice already showed come along with it — one
+        // batched insert, not a round trip per payment.
         const pays = (x.payments ?? []).filter((p) => num(p.amount) > 0);
-        for (const p of pays) {
-          await supabase.from("payment").insert({
-            invoice_id: inv.id,
-            project_id: project.id,
-            amount: num(p.amount),
-            method: "other",
-            paid_on: p.date ?? x.issued_at ?? new Date().toISOString().slice(0, 10),
-            note: ["Imported from Joist", p.note?.trim() || null].filter(Boolean).join(" — "),
-          });
+        if (pays.length) {
+          await supabase.from("payment").insert(
+            pays.map((p) => ({
+              invoice_id: inv.id,
+              project_id: project.id,
+              amount: num(p.amount),
+              method: "other" as const,
+              paid_on: p.date ?? x.issued_at ?? todayISO(),
+              note: ["Imported from Joist", p.note?.trim() || null].filter(Boolean).join(" — "),
+            })),
+          );
         }
         if (pays.length) {
           logActivity(supabase, project.id, "payment",

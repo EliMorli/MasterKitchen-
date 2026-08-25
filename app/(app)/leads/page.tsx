@@ -7,7 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { Topbar, Modal, Field, Badge, Empty } from "@/components/ui";
 import { LEAD_STAGES, LEAD_SOURCES, LEAD_SOURCE_LABEL, LEAD_SOURCE_TONE } from "@/lib/labels";
 import { logActivity } from "@/lib/activity";
-import { relativeDay, shortDate, dateTime } from "@/lib/format";
+import { relativeDay, shortDate, dateTime, todayISO } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
 type Lead = Database["public"]["Tables"]["lead"]["Row"];
@@ -175,7 +175,7 @@ export default function LeadsPage() {
   );
 }
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => todayISO();
 
 function LeadCard({
   lead,

@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
-import { createClient } from "@/lib/supabase/server";
+import { MAX_PDF_BASE64, extractFromPdf, requireAnthropic, requireUser } from "@/lib/api/extract";
 
 export const maxDuration = 60;
 
@@ -59,20 +58,8 @@ Rules:
 - Dates in YYYY-MM-DD. A field you cannot find is null. Do not invent anything.`;
 
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
-
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
-    return NextResponse.json(
-      { error: "PDF reading isn't connected yet — add ANTHROPIC_API_KEY in Vercel and redeploy." },
-      { status: 503 },
-    );
-  }
+  const denied = (await requireUser()) ?? requireAnthropic();
+  if (denied) return denied;
 
   let pdf = "";
   try {
@@ -84,55 +71,20 @@ export async function POST(request: NextRequest) {
   if (!pdf) {
     return NextResponse.json({ error: "pdf (base64) is required" }, { status: 400 });
   }
-  if (pdf.length > 6_000_000) {
+  if (pdf.length > MAX_PDF_BASE64) {
     return NextResponse.json(
       { error: "That PDF is too big (over ~4MB). Try a smaller file." },
       { status: 413 },
     );
   }
 
-  const client = new Anthropic();
-  try {
-    const response = await client.messages.create({
-      model: process.env.AGENT_MODEL || "claude-opus-5",
-      max_tokens: 3000,
-      output_config: { effort: "medium", format: EXTRACT_SCHEMA },
-      system: SYSTEM,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "document",
-              source: { type: "base64", media_type: "application/pdf", data: pdf },
-            },
-            { type: "text", text: "Extract the invoice fields from this document." },
-          ],
-        },
-      ],
-    });
-
-    if (response.stop_reason === "refusal") {
-      return NextResponse.json(
-        { error: "I couldn't read that document. Enter the invoice manually." },
-        { status: 422 },
-      );
-    }
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("");
-    return NextResponse.json({ extracted: JSON.parse(text) });
-  } catch (error) {
-    if (error instanceof Anthropic.APIError) {
-      return NextResponse.json(
-        { error: `Couldn't read the PDF (API error ${error.status ?? "?"}). Try again or enter manually.` },
-        { status: 502 },
-      );
-    }
-    return NextResponse.json(
-      { error: "Couldn't read the PDF. Try again or enter the invoice manually." },
-      { status: 500 },
-    );
-  }
+  const result = await extractFromPdf({
+    pdfBase64: pdf,
+    system: SYSTEM,
+    schema: EXTRACT_SCHEMA,
+    maxTokens: 3000,
+    fallbackHint: " Enter the invoice manually.",
+  });
+  if ("response" in result) return result.response;
+  return NextResponse.json({ extracted: result.extracted });
 }

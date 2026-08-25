@@ -23,7 +23,7 @@ export function num(value: number | string | null | undefined): number {
 }
 
 /** Dates from Postgres `date` columns are plain YYYY-MM-DD — parse them as local. */
-export function parseDate(d: string): Date {
+function parseDate(d: string): Date {
   const [y, m, day] = d.split("-").map(Number);
   return new Date(y, (m ?? 1) - 1, day ?? 1);
 }
@@ -32,6 +32,15 @@ export function toISODate(d: Date): string {
   const m = `${d.getMonth() + 1}`.padStart(2, "0");
   const day = `${d.getDate()}`.padStart(2, "0");
   return `${d.getFullYear()}-${m}-${day}`;
+}
+
+/**
+ * Today's date in the viewer's timezone, YYYY-MM-DD. Never use
+ * `new Date().toISOString().slice(0, 10)` for "today" — that's the UTC date,
+ * which flips to tomorrow at ~5pm in Los Angeles.
+ */
+export function todayISO(): string {
+  return toISODate(new Date());
 }
 
 export function shortDate(d: string | null | undefined): string {
@@ -83,11 +92,6 @@ export function relativeDay(d: string | null | undefined): string {
   return shortDate(d);
 }
 
-export function titleize(s: string | null | undefined): string {
-  if (!s) return "—";
-  return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
 export function initials(name: string | null | undefined): string {
   if (!name) return "?";
   return name
@@ -103,11 +107,6 @@ export function initials(name: string | null | undefined): string {
  */
 export function priceFromMarkup(cost: number, markupPct: number): number {
   return Math.round(cost * (1 + markupPct / 100) * 100) / 100;
-}
-
-export function markupFromPrice(cost: number, price: number): number {
-  if (cost <= 0) return 0;
-  return Math.round(((price - cost) / cost) * 1000) / 10;
 }
 
 export function grossMarginPct(cost: number, price: number): number {

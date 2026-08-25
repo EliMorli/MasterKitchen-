@@ -19,16 +19,22 @@ const PHASES = ["new", "design", "pricing", "approved", "in_progress", "complete
 
 const err = (msg: string) => `ERROR: ${msg}`;
 
-async function requireProject(supabase: DB, projectId: string) {
-  const { data } = await supabase
-    .from("project")
-    .select("id, address, phase, price, cost")
-    .eq("id", projectId)
-    .maybeSingle();
-  return data ?? null;
-}
+type ProjectRow = { id: string; address: string; phase: string; price: number | null; cost: number | null };
 
 export function buildAgentTools(supabase: DB) {
+  // One message often updates the same job with several tools — cache the
+  // project lookup for the lifetime of this request's tool set.
+  const projectCache = new Map<string, ProjectRow | null>();
+  async function requireProject(projectId: string): Promise<ProjectRow | null> {
+    if (projectCache.has(projectId)) return projectCache.get(projectId) ?? null;
+    const { data } = await supabase
+      .from("project")
+      .select("id, address, phase, price, cost")
+      .eq("id", projectId)
+      .maybeSingle();
+    projectCache.set(projectId, data ?? null);
+    return data ?? null;
+  }
   const scheduleEvent = betaTool({
     name: "schedule_event",
     description:
@@ -45,7 +51,7 @@ export function buildAgentTools(supabase: DB) {
       additionalProperties: false,
     } as const,
     run: async (input: { project_id: string; label: string; date: string; time?: string }) => {
-      const proj = await requireProject(supabase, input.project_id);
+      const proj = await requireProject(input.project_id);
       if (!proj) return err("No job with that project_id. Check the ACTIVE JOBS list.");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) return err("date must be YYYY-MM-DD.");
       const { error } = await supabase.from("event").insert({
@@ -75,7 +81,7 @@ export function buildAgentTools(supabase: DB) {
       additionalProperties: false,
     } as const,
     run: async (input: { project_id: string; label_match: string }) => {
-      const proj = await requireProject(supabase, input.project_id);
+      const proj = await requireProject(input.project_id);
       if (!proj) return err("No job with that project_id.");
       // % and _ are ilike wildcards — a literal "50%" must not match everything.
       const needle = input.label_match.replace(/[%_]/g, "\\$&");
@@ -128,7 +134,7 @@ export function buildAgentTools(supabase: DB) {
       additionalProperties: false,
     } as const,
     run: async (input: { project_id: string; phase: string }) => {
-      const proj = await requireProject(supabase, input.project_id);
+      const proj = await requireProject(input.project_id);
       if (!proj) return err("No job with that project_id.");
       if (!PHASES.includes(input.phase as (typeof PHASES)[number])) return err("Unknown phase.");
       if (proj.phase === input.phase) return `${proj.address} is already in ${input.phase}.`;
@@ -174,7 +180,7 @@ export function buildAgentTools(supabase: DB) {
       payee?: string;
       paid?: boolean;
     }) => {
-      const proj = await requireProject(supabase, input.project_id);
+      const proj = await requireProject(input.project_id);
       if (!proj) return err("No job with that project_id.");
       if (!Number.isFinite(input.amount) || input.amount <= 0) return err("amount must be a positive number.");
       if (input.date && !/^\d{4}-\d{2}-\d{2}$/.test(input.date)) return err("date must be YYYY-MM-DD.");
@@ -196,12 +202,12 @@ export function buildAgentTools(supabase: DB) {
         project_id: input.project_id,
         label: input.label.slice(0, 200),
         amount: input.amount,
-        spent_at: input.date || new Date().toISOString().slice(0, 10),
+        spent_at: input.date || businessToday(),
         category: input.category ?? "Other",
         partner_id: partnerId,
         payee_name: payeeName,
         paid,
-        paid_on: paid ? new Date().toISOString().slice(0, 10) : null,
+        paid_on: paid ? businessToday() : null,
       });
       if (error) return err(error.message);
       logActivity(supabase, input.project_id, "expense",
@@ -225,7 +231,7 @@ export function buildAgentTools(supabase: DB) {
       additionalProperties: false,
     } as const,
     run: async (input: { project_id: string; description: string; amount: number }) => {
-      const proj = await requireProject(supabase, input.project_id);
+      const proj = await requireProject(input.project_id);
       if (!proj) return err("No job with that project_id.");
       if (!Number.isFinite(input.amount) || input.amount <= 0) return err("amount must be a positive number.");
       const { error } = await supabase.from("change_order").insert({
@@ -254,7 +260,7 @@ export function buildAgentTools(supabase: DB) {
       additionalProperties: false,
     } as const,
     run: async (input: { project_id: string; text: string }) => {
-      const proj = await requireProject(supabase, input.project_id);
+      const proj = await requireProject(input.project_id);
       if (!proj) return err("No job with that project_id.");
       const { error } = await supabase.from("activity").insert({
         project_id: input.project_id,
@@ -280,7 +286,7 @@ export function buildAgentTools(supabase: DB) {
       additionalProperties: false,
     } as const,
     run: async (input: { project_id: string }) => {
-      const proj = await requireProject(supabase, input.project_id);
+      const proj = await requireProject(input.project_id);
       if (!proj) return err("No job with that project_id.");
       const [ev, co, inv] = await Promise.all([
         supabase
@@ -321,6 +327,19 @@ export function buildAgentTools(supabase: DB) {
   ];
 }
 
+// The business runs in Los Angeles; the server runs in UTC. Dates the agent
+// writes (spent_at, paid_on) and the "today" it reasons from must both be the
+// LA calendar date, or evening entries land on tomorrow.
+const BUSINESS_TZ = "America/Los_Angeles";
+function businessToday(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: BUSINESS_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
 /** The ACTIVE JOBS list + date grounding the model needs to resolve "412 maple" and "tomorrow". */
 export async function buildAgentContext(supabase: DB): Promise<string> {
   const { data: projects } = await supabase
@@ -328,7 +347,8 @@ export async function buildAgentContext(supabase: DB): Promise<string> {
     .select("id, code, address, city, phase, price, client_company(name), contact(name)")
     .eq("archived", false)
     .neq("phase", "paid")
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(60);
 
   const rows = (projects ?? []).map((p) => {
     const company = (p.client_company as { name: string } | null)?.name ?? "no client";
@@ -336,22 +356,15 @@ export async function buildAgentContext(supabase: DB): Promise<string> {
     return `- ${p.address}${p.city ? `, ${p.city}` : ""} | ${p.code} | phase: ${p.phase} | ${company}${rep ? ` · ${rep}` : ""} | project_id: ${p.id}`;
   });
 
-  const now = new Date();
-  const today = now.toLocaleDateString("en-US", {
+  const today = new Date().toLocaleDateString("en-US", {
     weekday: "long",
     year: "numeric",
     month: "long",
     day: "numeric",
-    timeZone: "America/New_York",
+    timeZone: BUSINESS_TZ,
   });
-  const iso = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
 
-  return `TODAY: ${today} (${iso}, America/New_York)
+  return `TODAY: ${today} (${businessToday()}, ${BUSINESS_TZ})
 
 ACTIVE JOBS:
 ${rows.join("\n") || "(none)"}`;

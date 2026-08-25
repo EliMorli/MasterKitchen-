@@ -7,7 +7,7 @@ import { FileUp, LayoutGrid, List, Plus, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Topbar, Modal, Field, Badge, Table, Empty } from "@/components/ui";
 import { PHASES, PHASE_LABEL, type Phase } from "@/lib/labels";
-import { nextStep } from "@/lib/next-step";
+import { nextStep, type NextStep } from "@/lib/next-step";
 import { logActivity } from "@/lib/activity";
 import { money } from "@/lib/format";
 import { AddRepModal } from "@/components/add-rep";
@@ -115,6 +115,36 @@ export default function JobsPage() {
     return map;
   }, [projects]);
 
+  // Next-step per job, derived once — not re-filtered per card per render
+  // (dragging re-renders the whole board on every dragover).
+  const stepById = useMemo(() => {
+    const bucket = (rows: Child[]) => {
+      const m = new Map<string, Child[]>();
+      for (const r of rows) {
+        const arr = m.get(r.project_id) ?? [];
+        arr.push(r);
+        m.set(r.project_id, arr);
+      }
+      return m;
+    };
+    const ev = bucket(children.events);
+    const inv = bucket(children.invoices);
+    const req = bucket(children.reqs);
+    const co = bucket(children.cos);
+    return new Map(
+      projects.map((p) => [
+        p.id,
+        nextStep(
+          p,
+          (ev.get(p.id) ?? []) as never,
+          (inv.get(p.id) ?? []) as never,
+          (req.get(p.id) ?? []) as never,
+          (co.get(p.id) ?? []) as never,
+        ),
+      ]),
+    );
+  }, [projects, children]);
+
   return (
     <>
       <Topbar
@@ -153,7 +183,7 @@ export default function JobsPage() {
       />
 
       {view === "list" ? (
-        <JobsList projects={projects} children_={children} loading={loading} onMove={moveTo} />
+        <JobsList projects={projects} stepById={stepById} loading={loading} onMove={moveTo} />
       ) : (
       <div className="scroll-x pb-2">
         <div className="flex min-w-max gap-3">
@@ -204,7 +234,7 @@ export default function JobsPage() {
                         {p.client_company?.name ?? "No client"}
                         {p.contact?.name ? ` · ${p.contact.name}` : ""}
                       </p>
-                      <CardStep p={p} children_={children} />
+                      <CardStep step={stepById.get(p.id)} />
                       <div className="mt-2 flex items-center justify-between">
                         <span className="nums text-xs text-ink-500">{p.code}</span>
                         {p.price != null ? (
@@ -243,21 +273,8 @@ export default function JobsPage() {
 }
 
 /** The one line that makes the board actionable: whose move is it? */
-function CardStep({
-  p,
-  children_,
-}: {
-  p: Project;
-  children_: { events: Child[]; invoices: Child[]; reqs: Child[]; cos: Child[] };
-}) {
-  const step = nextStep(
-    p,
-    children_.events.filter((e) => e.project_id === p.id) as never,
-    children_.invoices.filter((i) => i.project_id === p.id) as never,
-    children_.reqs.filter((r) => r.project_id === p.id) as never,
-    children_.cos.filter((c) => c.project_id === p.id) as never,
-  );
-  if (step.kind === "done") return null;
+function CardStep({ step }: { step: NextStep | undefined }) {
+  if (!step || step.kind === "done") return null;
   return (
     <p
       className={`mt-1 truncate text-xs font-medium ${
@@ -282,12 +299,12 @@ const PHASE_INDEX: Record<Phase, number> = Object.fromEntries(
  */
 function JobsList({
   projects,
-  children_,
+  stepById,
   loading,
   onMove,
 }: {
   projects: Project[];
-  children_: { events: Child[]; invoices: Child[]; reqs: Child[]; cos: Child[] };
+  stepById: Map<string, NextStep>;
   loading: boolean;
   onMove: (id: string, phase: Phase) => void;
 }) {
@@ -325,13 +342,7 @@ function JobsList({
           </td>
         </tr>,
         ...rows.map((p) => {
-        const step = nextStep(
-          p,
-          children_.events.filter((e) => e.project_id === p.id) as never,
-          children_.invoices.filter((i) => i.project_id === p.id) as never,
-          children_.reqs.filter((r) => r.project_id === p.id) as never,
-          children_.cos.filter((c) => c.project_id === p.id) as never,
-        );
+        const step = stepById.get(p.id) ?? { kind: "done" as const, label: "", urgent: false };
         const dot = PHASES[PHASE_INDEX[p.phase]]?.dot ?? "bg-ink-400";
         return (
           <tr key={p.id} className="hover:bg-ink-50">

@@ -30,26 +30,33 @@ export default function CalendarPage() {
   const firstISO = toISODate(new Date(year, month, 1));
   const lastISO = toISODate(new Date(year, month + 1, 0));
 
+  // Only the events depend on the visible month; the job and partner pickers
+  // are reference data, fetched once — not re-paid on every Prev/Next click.
   const load = useCallback(async () => {
-    const [ev, pr, pa] = await Promise.all([
-      supabase
-        .from("event")
-        .select("*, project(id, address), partner(name)")
-        .gte("date", firstISO)
-        .lte("date", lastISO)
-        .order("time"),
-      supabase.from("project").select("id, address").eq("archived", false).order("created_at", { ascending: false }),
-      supabase.from("partner").select("id, name").order("name"),
-    ]);
-    setEvents((ev.data as Event[]) ?? []);
-    setProjects(pr.data ?? []);
-    setPartners(pa.data ?? []);
+    const { data } = await supabase
+      .from("event")
+      .select("*, project(id, address), partner(name)")
+      .gte("date", firstISO)
+      .lte("date", lastISO)
+      .order("time");
+    setEvents((data as Event[]) ?? []);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [year, month]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    Promise.all([
+      supabase.from("project").select("id, address").eq("archived", false).order("created_at", { ascending: false }),
+      supabase.from("partner").select("id, name").order("name"),
+    ]).then(([pr, pa]) => {
+      setProjects(pr.data ?? []);
+      setPartners(pa.data ?? []);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const cells = useMemo(() => {
     const first = new Date(year, month, 1);

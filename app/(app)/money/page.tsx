@@ -4,7 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { Badge, Empty, StatCard, Table, Topbar } from "@/components/ui";
-import { money, num, shortDate, toISODate } from "@/lib/format";
+import { money, num, shortDate, todayISO } from "@/lib/format";
+import {
+  approvedCoByProject,
+  expenseByProject,
+  jobProfit,
+  liveInvoiceStatus,
+  paidByInvoice,
+  type LiveInvoiceStatus,
+} from "@/lib/derive";
 import type { Database } from "@/lib/database.types";
 
 type Invoice = Database["public"]["Tables"]["invoice"]["Row"] & {
@@ -54,28 +62,20 @@ export default function MoneyPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const today = toISODate(new Date());
+  const today = todayISO();
   const thisMonth = today.slice(0, 7);
 
   // Everything money-related derives from the payment table — the same source
-  // Pulse uses — so the two screens can never disagree. Balance per invoice is
-  // amount minus what's actually been received against it.
-  const paidByInvoice = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const p of payments) m.set(p.invoice_id, (m.get(p.invoice_id) ?? 0) + num(p.amount));
+  // Pulse uses — so the two screens can never disagree. Status is derived once
+  // per invoice, not per row-render or per sort comparison.
+  const paidMap = useMemo(() => paidByInvoice(payments), [payments]);
+  const statusById = useMemo(() => {
+    const m = new Map<string, LiveInvoiceStatus>();
+    for (const i of invoices) m.set(i.id, liveInvoiceStatus(i, paidMap, today));
     return m;
-  }, [payments]);
-  const balanceOf = (i: Invoice) => Math.max(0, num(i.amount) - (paidByInvoice.get(i.id) ?? 0));
-
-  // Live badge, derived like the job page: draft/paid/partial/overdue/sent.
-  function liveStatus(i: Invoice): { label: string; tone: string } {
-    const paid = paidByInvoice.get(i.id) ?? 0;
-    if (i.status === "draft" && paid === 0) return { label: "draft", tone: "bg-ink-100 text-ink-700" };
-    if (balanceOf(i) === 0 && num(i.amount) > 0) return { label: "paid", tone: "bg-emerald-100 text-emerald-800" };
-    if (paid > 0) return { label: "partial", tone: "bg-violet-100 text-violet-700" };
-    if (i.due_at && i.due_at < today) return { label: "overdue", tone: "bg-red-100 text-red-700" };
-    return { label: "sent", tone: "bg-brand-100 text-brand-700" };
-  }
+  }, [invoices, paidMap, today]);
+  const statusOf = (i: Invoice) => statusById.get(i.id) ?? liveInvoiceStatus(i, paidMap, today);
+  const balanceOf = (i: Invoice) => statusOf(i).balance;
 
   // Click a column to sort; click again to flip. Default: newest invoice first.
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
@@ -92,7 +92,7 @@ export default function MoneyPage() {
         case "description": return i.description ?? "";
         case "amount": return num(i.amount);
         case "due": return i.due_at ?? "";
-        case "status": return STATUS_RANK[liveStatus(i).label] ?? 9;
+        case "status": return STATUS_RANK[statusOf(i).label] ?? 9;
       }
     };
     return [...invoices].sort((a, b) => {
@@ -101,7 +101,7 @@ export default function MoneyPage() {
       return cmp * sort.dir;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [invoices, sort, paidByInvoice]);
+  }, [invoices, sort, statusById]);
 
   const SortHead = ({ label, k, right }: { label: string; k: SortKey; right?: boolean }) => (
     <button
@@ -115,51 +115,55 @@ export default function MoneyPage() {
     </button>
   );
 
-  const outstanding = invoices
-    .filter((i) => i.status !== "draft")
-    .reduce((s, i) => s + balanceOf(i), 0);
-  const overdue = invoices.filter(
-    (i) => i.status !== "draft" && balanceOf(i) > 0 && i.due_at && i.due_at < today,
-  );
-  const collected = payments
-    .filter((p) => p.paid_on?.startsWith(thisMonth))
-    .reduce((s, p) => s + num(p.amount), 0);
-  const spent = expenses
-    .filter((e) => e.spent_at?.startsWith(thisMonth))
-    .reduce((s, e) => s + num(e.amount), 0);
-  // Who we still owe — the number the office watches day to day.
-  const unpaidCosts = expenses.filter((e) => !e.paid).reduce((s, e) => s + num(e.amount), 0);
+  // The stat strip re-derives only when its data changes — not on every sort
+  // click or paid toggle re-render.
+  const stats = useMemo(() => {
+    const outstanding = invoices
+      .filter((i) => i.status !== "draft")
+      .reduce((s, i) => s + (statusById.get(i.id)?.balance ?? 0), 0);
+    const overdue = invoices.filter(
+      (i) => i.status !== "draft" && statusById.get(i.id)?.label === "overdue",
+    );
+    const collected = payments
+      .filter((p) => p.paid_on?.startsWith(thisMonth))
+      .reduce((s, p) => s + num(p.amount), 0);
+    const spent = expenses
+      .filter((e) => e.spent_at?.startsWith(thisMonth))
+      .reduce((s, e) => s + num(e.amount), 0);
+    // Who we still owe — the number the office watches day to day.
+    const unpaidCosts = expenses.filter((e) => !e.paid).reduce((s, e) => s + num(e.amount), 0);
+    return { outstanding, overdue, collected, spent, unpaidCosts };
+  }, [invoices, payments, expenses, statusById, thisMonth]);
+  const { outstanding, overdue, collected, spent, unpaidCosts } = stats;
 
   async function togglePaid(e: Expense) {
     const paid = !e.paid;
-    const paid_on = paid ? toISODate(new Date()) : null;
+    const paid_on = paid ? todayISO() : null;
     setExpenses((prev) => prev.map((x) => (x.id === e.id ? { ...x, paid, paid_on } : x)));
     await supabase.from("expense").update({ paid, paid_on }).eq("id", e.id);
   }
 
   // Upsell = the extra the GC approved on top of the original price. Approved
   // change orders are money already won; pending ones are still on the table.
-  const upsellWon = cos
-    .filter((c) => c.status === "approved")
-    .reduce((s, c) => s + num(c.amount), 0);
-  const upsellPending = cos
-    .filter((c) => c.status === "pending")
-    .reduce((s, c) => s + num(c.amount), 0);
+  const { upsellWon, upsellPending } = useMemo(
+    () => ({
+      upsellWon: cos.filter((c) => c.status === "approved").reduce((s, c) => s + num(c.amount), 0),
+      upsellPending: cos.filter((c) => c.status === "pending").reduce((s, c) => s + num(c.amount), 0),
+    }),
+    [cos],
+  );
 
   // Profit per job: price + approved change orders − expenses. The expense
   // ledger IS the job's cost — project.cost is retired from the math.
   const profitRows = useMemo(() => {
+    const extrasBy = approvedCoByProject(cos);
+    const expBy = expenseByProject(expenses);
     return projects
-      .filter((p) => p.price != null || expenses.some((e) => e.project_id === p.id))
+      .filter((p) => p.price != null || expBy.has(p.id))
       .map((p) => {
-        const extras = cos
-          .filter((c) => c.project_id === p.id && c.status === "approved")
-          .reduce((s, c) => s + num(c.amount), 0);
-        const exp = expenses
-          .filter((e) => e.project_id === p.id)
-          .reduce((s, e) => s + num(e.amount), 0);
-        const profit = num(p.price) + extras - exp;
-        return { p, extras, exp, profit };
+        const extras = extrasBy.get(p.id) ?? 0;
+        const exp = expBy.get(p.id) ?? 0;
+        return { p, extras, exp, profit: jobProfit(p.price, extras, exp) };
       })
       .sort((a, b) => b.profit - a.profit);
   }, [projects, cos, expenses]);
@@ -232,10 +236,7 @@ export default function MoneyPage() {
                     {shortDate(i.due_at)}
                   </td>
                   <td className="td">
-                    {(() => {
-                      const s = liveStatus(i);
-                      return <Badge tone={s.tone}>{s.label}</Badge>;
-                    })()}
+                    <Badge tone={statusOf(i).tone}>{statusOf(i).label}</Badge>
                   </td>
                 </tr>
               ))}

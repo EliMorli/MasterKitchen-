@@ -18,7 +18,6 @@ type Proj = {
 type Thread = {
   project: Proj;
   last: Msg | null;
-  count: number;
   unread: number;
   important: number;
 };
@@ -76,7 +75,6 @@ export default function CommunicationsPage() {
       list.push({
         project: p,
         last: arr[0] ?? null, // msgs are newest-first
-        count: arr.length,
         unread: arr.filter((m) => m.direction === "in" && !m.read_at).length,
         important: arr.filter((m) => m.important).length,
       });
@@ -102,10 +100,14 @@ export default function CommunicationsPage() {
     );
   }, [threads, q]);
 
-  const attention = shown.filter((t) => t.unread > 0 || t.important > 0);
+  const attention = useMemo(() => shown.filter((t) => t.unread > 0 || t.important > 0), [shown]);
   // Lead-thread and assistant messages aren't unrouted — leads live on the
   // Lead Board until converted, and the assistant has its own pinned thread.
-  const unrouted = msgs.filter((m) => !m.project_id && !m.lead_id && m.channel !== "assistant");
+  // Memoized: this must not re-scan 1000 messages per search keystroke.
+  const unrouted = useMemo(
+    () => msgs.filter((m) => !m.project_id && !m.lead_id && m.channel !== "assistant"),
+    [msgs],
+  );
   // Any job can be opened — including one with no messages yet (that's what
   // "New message" does); its stats simply don't exist yet.
   const ASSISTANT = "__assistant__";
@@ -239,6 +241,9 @@ export default function CommunicationsPage() {
                   toPhone={openProject.contact?.phone ?? null}
                   toName={openProject.contact?.name ?? null}
                   onChanged={load}
+                  onMessageChanged={(id, patch) =>
+                    setMsgs((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)))
+                  }
                 />
               </>
             ) : (

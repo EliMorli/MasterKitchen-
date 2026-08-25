@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { Badge, Empty, Field, Modal, Table, Topbar } from "@/components/ui";
 import { PHASE_LABEL, PHASE_TONE, type Phase } from "@/lib/labels";
 import { money, num } from "@/lib/format";
+import { approvedCoByProject, expenseByProject, jobProfit, paidByInvoice } from "@/lib/derive";
 import type { Database } from "@/lib/database.types";
 
 type Company = Database["public"]["Tables"]["client_company"]["Row"] & {
@@ -18,7 +19,6 @@ type Proj = {
   address: string;
   phase: Phase;
   price: number | null;
-  cost: number | null;
   client_company_id: string | null;
   contact_id: string | null;
   archived: boolean;
@@ -60,7 +60,7 @@ export default function ClientsPage() {
       supabase.from("client_company").select("*, contact(id, name, phone, email)").order("name"),
       supabase
         .from("project")
-        .select("id, address, phase, price, cost, client_company_id, contact_id, archived, created_at"),
+        .select("id, address, phase, price, client_company_id, contact_id, archived, created_at"),
       supabase.from("invoice").select("id, project_id, amount, status"),
       supabase.from("payment").select("invoice_id, amount"),
       supabase.from("change_order").select("project_id, amount, status"),
@@ -80,47 +80,59 @@ export default function ClientsPage() {
     load();
   }, [load]);
 
-  // One pass over the children, then a per-company rollup — same formulas the
+  // The shared per-project money maps, built once and reused by both views —
+  // the company cards and the Reps scoreboard derive from the same numbers.
+  const moneyMaps = useMemo(
+    () => ({ extrasBy: approvedCoByProject(cos), expBy: expenseByProject(expenses) }),
+    [cos, expenses],
+  );
+
+  // Single-pass bucketing, then a per-company rollup — same formulas the
   // Cashflow screen uses, so the two can never disagree.
   const statsByCompany = useMemo(() => {
-    const paidByInvoice = new Map<string, number>();
-    for (const p of payments)
-      paidByInvoice.set(p.invoice_id, (paidByInvoice.get(p.invoice_id) ?? 0) + num(p.amount));
+    const { extrasBy, expBy } = moneyMaps;
+    const paidMap = paidByInvoice(payments);
     const projectCompany = new Map<string, string | null>();
-    for (const p of projects) projectCompany.set(p.id, p.client_company_id);
-    const approvedCoByProject = new Map<string, number>();
-    for (const c of cos)
-      if (c.status === "approved")
-        approvedCoByProject.set(
-          c.project_id,
-          (approvedCoByProject.get(c.project_id) ?? 0) + num(c.amount),
-        );
-    const expenseByProject = new Map<string, number>();
-    for (const e of expenses)
-      expenseByProject.set(e.project_id, (expenseByProject.get(e.project_id) ?? 0) + num(e.amount));
+    const projsByCompany = new Map<string, Proj[]>();
+    for (const p of projects) {
+      projectCompany.set(p.id, p.client_company_id);
+      if (p.client_company_id) {
+        const arr = projsByCompany.get(p.client_company_id) ?? [];
+        arr.push(p);
+        projsByCompany.set(p.client_company_id, arr);
+      }
+    }
+    const invoicesByCompany = new Map<string, Inv[]>();
+    for (const i of invoices) {
+      const cid = projectCompany.get(i.project_id);
+      if (!cid) continue;
+      const arr = invoicesByCompany.get(cid) ?? [];
+      arr.push(i);
+      invoicesByCompany.set(cid, arr);
+    }
 
     const now = new Date();
     const map = new Map<string, Stats>();
     for (const c of companies) {
-      const projs = projects.filter((p) => p.client_company_id === c.id);
+      const projs = projsByCompany.get(c.id) ?? [];
       const openProjects = projs
         .filter((p) => !p.archived && p.phase !== "paid")
         .sort((a, b) => a.address.localeCompare(b.address));
 
-      const companyInvoices = invoices.filter((i) => projectCompany.get(i.project_id) === c.id);
-      const collected = companyInvoices.reduce((s, i) => s + (paidByInvoice.get(i.id) ?? 0), 0);
+      const companyInvoices = invoicesByCompany.get(c.id) ?? [];
+      const collected = companyInvoices.reduce((s, i) => s + (paidMap.get(i.id) ?? 0), 0);
       const outstanding = companyInvoices
         .filter((i) => i.status !== "draft")
-        .reduce((s, i) => s + Math.max(0, num(i.amount) - (paidByInvoice.get(i.id) ?? 0)), 0);
+        .reduce((s, i) => s + Math.max(0, num(i.amount) - (paidMap.get(i.id) ?? 0)), 0);
 
       // Job cost = the expense ledger; project.cost is retired from the math.
-      const priced = projs.filter((p) => p.price != null || expenseByProject.has(p.id));
+      const priced = projs.filter((p) => p.price != null || expBy.has(p.id));
       let contractValue = 0;
       let netProfit = 0;
       for (const p of priced) {
-        const extras = approvedCoByProject.get(p.id) ?? 0;
+        const extras = extrasBy.get(p.id) ?? 0;
         contractValue += num(p.price) + extras;
-        netProfit += num(p.price) + extras - (expenseByProject.get(p.id) ?? 0);
+        netProfit += jobProfit(p.price, extras, expBy.get(p.id));
       }
       const first = projs.reduce<string | null>(
         (m, p) => (m == null || p.created_at < m ? p.created_at : m),
@@ -147,7 +159,7 @@ export default function ClientsPage() {
       });
     }
     return map;
-  }, [companies, projects, invoices, payments, cos, expenses]);
+  }, [companies, projects, invoices, payments, moneyMaps]);
 
   return (
     <>
@@ -181,7 +193,12 @@ export default function ClientsPage() {
       />
 
       {view === "reps" ? (
-        <RepsBoard companies={companies} projects={projects} cos={cos} expenses={expenses} />
+        <RepsBoard
+          companies={companies}
+          projects={projects}
+          extrasBy={moneyMaps.extrasBy}
+          expBy={moneyMaps.expBy}
+        />
       ) : companies.length === 0 ? (
         <div className="card">
           <Empty title={loading ? "Loading…" : "No clients yet"} />
@@ -465,13 +482,13 @@ type RepPeriod = (typeof REP_PERIODS)[number];
 function RepsBoard({
   companies,
   projects,
-  cos,
-  expenses,
+  extrasBy,
+  expBy,
 }: {
   companies: Company[];
   projects: Proj[];
-  cos: CO[];
-  expenses: Exp[];
+  extrasBy: Map<string, number>;
+  expBy: Map<string, number>;
 }) {
   const [period, setPeriod] = useState<RepPeriod>("All time");
 
@@ -483,14 +500,6 @@ function RepsBoard({
         : period === "This year"
           ? new Date(now.getFullYear(), 0, 1).toISOString()
           : null;
-
-    const approvedCoByProject = new Map<string, number>();
-    for (const c of cos)
-      if (c.status === "approved")
-        approvedCoByProject.set(c.project_id, (approvedCoByProject.get(c.project_id) ?? 0) + num(c.amount));
-    const expenseByProject = new Map<string, number>();
-    for (const e of expenses)
-      expenseByProject.set(e.project_id, (expenseByProject.get(e.project_id) ?? 0) + num(e.amount));
 
     const repInfo = new Map<string, { name: string; company: string }>();
     for (const c of companies)
@@ -506,8 +515,8 @@ function RepsBoard({
       }
       const agg = byRep.get(p.contact_id) ?? { jobs: 0, revenue: 0, cost: 0 };
       agg.jobs++;
-      agg.revenue += num(p.price) + (approvedCoByProject.get(p.id) ?? 0);
-      agg.cost += expenseByProject.get(p.id) ?? 0;
+      agg.revenue += num(p.price) + (extrasBy.get(p.id) ?? 0);
+      agg.cost += expBy.get(p.id) ?? 0;
       byRep.set(p.contact_id, agg);
     }
 
@@ -525,7 +534,7 @@ function RepsBoard({
     // money decides the order.
     list.sort((a, b) => b.profit - a.profit || b.jobs - a.jobs);
     return { list, unassigned };
-  }, [companies, projects, cos, expenses, period]);
+  }, [companies, projects, extrasBy, expBy, period]);
 
   const MEDALS = ["🥇", "🥈", "🥉"];
 
