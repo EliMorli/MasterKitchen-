@@ -30,8 +30,8 @@ them on first sign-in.
 
 1. [vercel.com/new](https://vercel.com/new) → import **`elimorli/masterkitchen-`**
    into the **eli's projects** team.
-2. Branch: `claude/master-kitchen-discovery-gugsw7` (or merge to `main` first and
-   deploy that).
+2. Production branch: `main`. Merging a pull request into `main` deploys it;
+   every other branch gets a preview URL.
 3. Framework preset: **Next.js**. Everything else auto-detects — no build command
    or output directory to set.
 4. Add two environment variables, for Production, Preview and Development:
